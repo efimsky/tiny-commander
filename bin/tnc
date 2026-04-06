@@ -1,0 +1,21 @@
+#!/usr/bin/env python3
+"""Tiny Commander - A lightweight dual-pane file manager."""
+
+import sys
+import os
+
+# Add the parent directory to the path so we can import tnc
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Check Python version BEFORE importing modules that use 3.10+ syntax
+from tnc._version_check import check_python_version
+
+_version_error = check_python_version()
+if _version_error:
+    sys.stderr.write(_version_error + "\n")
+    sys.exit(1)
+
+from tnc.__main__ import main
+
+if __name__ == "__main__":
+    sys.exit(main())

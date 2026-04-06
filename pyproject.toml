@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+authors = [{ name = "efimsky", email = "egorgorskyv@gmail.com" }]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console :: Curses",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Software Engineers",
+  "Intended Audience :: System Administrators",
+  "Operating System :: MacOS",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: System :: Filesystems",
+  "Topic :: Utilities",
+]
+keywords = [
+  "file manager",
+  "orthodox file commander",
+  "terminal",
+  "cli",
+  "curses",
+  "midnight-commander",
+  "far manager",
+  "volkov commander",
+  "norton commander",
+  "total commander",
+  "dual-pane file manager",
+  "file-browser",
+]
+requires-python = ">=3.13"
+dependencies = []
+
+[project.urls]
+"Homepage" = "https://github.com/efimsky/tiny-commander"
+"Bug Tracker" = "https://github.com/efimsky/tiny-commander/issues"
+
+[project.scripts]
+tnc = "tnc.__main__:main"
+name = "tiny-commander"
+version = "0.1.0"
+description = "A zero-dependency dual-pane file manager for restricted environments in Python"
+readme = "README.md"

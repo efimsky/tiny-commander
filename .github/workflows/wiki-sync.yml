@@ -1,0 +1,61 @@
+name: Sync Docs to Wiki
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'docs/**'
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  sync-wiki:
+    runs-on: ubuntu-latest
+    
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Checkout wiki
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}.wiki
+          path: wiki
+          token: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true  # Wiki might not exist yet
+      
+      - name: Initialize wiki if needed
+        run: |
+          if [ ! -d "wiki/.git" ]; then
+            mkdir -p wiki
+            cd wiki
+            git init
+            git remote add origin https://github.com/${{ github.repository }}.wiki.git
+          fi
+      
+      - name: Sync docs to wiki
+        run: |
+          # Copy all markdown files from docs to wiki
+          cp -r docs/* wiki/
+          
+          cd wiki
+          
+          # Configure git
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          
+          # Check if there are changes
+          if git diff --quiet && git diff --cached --quiet; then
+            echo "No changes to sync"
+            exit 0
+          fi
+          
+          # Commit and push
+          git add -A
+          git commit -m "Sync docs from main branch"
+          git push origin master || git push origin main
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
