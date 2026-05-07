@@ -227,6 +227,38 @@ class TestMouseSwapConfig(unittest.TestCase):
             self.assertIn('mouse_swap = no', content)
 
 
+class TestConfigLoadResilience(unittest.TestCase):
+    """Config.load should not crash startup on weird/corrupt config files (issue #27)."""
+
+    def test_load_returns_defaults_when_path_is_directory(self):
+        """A directory at the config path must not crash startup."""
+        from tnc.config import Config
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg_path = Path(tmpdir) / 'config'
+            cfg_path.mkdir()
+            config = Config.load(str(cfg_path))
+            self.assertIsNotNone(config)
+
+    def test_load_returns_defaults_on_invalid_utf8(self):
+        """Non-UTF-8 bytes must not crash startup."""
+        from tnc.config import Config
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg_path = Path(tmpdir) / 'config'
+            cfg_path.write_bytes(b'\xff\xfe\x00\x00garbage\x80\x81')
+            config = Config.load(str(cfg_path))
+            self.assertIsNotNone(config)
+
+    def test_load_returns_defaults_on_partial_invalid_utf8(self):
+        """A mid-file decode error must not crash; we fall back to defaults."""
+        from tnc.config import Config
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg_path = Path(tmpdir) / 'config'
+            cfg_path.write_bytes(b'editor = nano\nbroken = \xff\xfe\n')
+            # Should not raise UnicodeDecodeError
+            config = Config.load(str(cfg_path))
+            self.assertIsNotNone(config)
+
+
 class TestConfigSaveErrorReporting(unittest.TestCase):
     """Config.save should report failure rather than crash the caller (issue #26)."""
 
