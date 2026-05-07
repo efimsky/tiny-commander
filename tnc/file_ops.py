@@ -314,28 +314,32 @@ def chmod_recursive(
     changed: list[str] = []
     errors: list[str] = []
 
-    def process_path(p: Path) -> None:
-        """Process a single path, recursing into directories.
-
-        Post-order: children are chmodded BEFORE the parent so that a
-        dir_mode which strips +x from the owner doesn't lock us out of
-        descending into the directory we just modified.
-        """
+    # Iterative post-order traversal using an explicit stack so that
+    # arbitrarily deep trees (e.g. nested node_modules) don't blow the
+    # Python recursion limit. Each stack entry is (path, phase):
+    #   - 'visit': first time we see the path; either chmod-as-file or
+    #     schedule the post-visit and enqueue children
+    #   - 'finalize': children are done, chmod the directory itself
+    stack: list[tuple[Path, str]] = [(target, 'visit')]
+    while stack:
+        p, phase = stack.pop()
         try:
-            is_real_dir = p.is_dir() and not p.is_symlink()
-            if is_real_dir:
-                # Snapshot children before touching the parent — the
-                # iterdir generator would otherwise traverse a directory
-                # whose mode is changing under us.
+            if phase == 'finalize':
+                os.chmod(p, dir_mode)
+                changed.append(str(p))
+                continue
+
+            if p.is_dir() and not p.is_symlink():
                 try:
                     children = list(p.iterdir())
                 except OSError as err:
                     errors.append(f'{p}: {err}')
                     children = []
+                # Push the parent's chmod first so it pops AFTER all
+                # children are processed (LIFO → post-order).
+                stack.append((p, 'finalize'))
                 for child in children:
-                    process_path(child)
-                os.chmod(p, dir_mode)
-                changed.append(str(p))
+                    stack.append((child, 'visit'))
             else:
                 os.chmod(p, file_mode)
                 changed.append(str(p))
@@ -343,8 +347,6 @@ def chmod_recursive(
             errors.append(f'{p}: Permission denied')
         except OSError as err:
             errors.append(f'{p}: {err}')
-
-    process_path(target)
 
     if errors:
         return ChmodResult(
