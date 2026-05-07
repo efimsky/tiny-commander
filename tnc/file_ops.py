@@ -724,6 +724,34 @@ def delete_files(filenames: list[str], parent_dir: str | Path) -> DeleteResult:
     return DeleteResult(success=True, deleted_files=deleted)
 
 
+def _type_mismatch_error(
+    source_path: Path, dest_path: Path, operation_name: str
+) -> str | None:
+    """Return an error string when source and destination have incompatible types.
+
+    Symlinks are treated as their own kind so that overwriting a symlink with
+    a real file/directory still goes through the normal overwrite prompt.
+    """
+    src_kind = _path_kind(source_path)
+    dst_kind = _path_kind(dest_path)
+    if src_kind == dst_kind:
+        return None
+    if 'symlink' in (src_kind, dst_kind):
+        return None
+    return (
+        f'Refusing to {operation_name} {src_kind} over existing {dst_kind} '
+        f'(delete destination first if intentional)'
+    )
+
+
+def _path_kind(path: Path) -> str:
+    if path.is_symlink():
+        return 'symlink'
+    if path.is_dir():
+        return 'directory'
+    return 'file'
+
+
 def _move_aside(dest_path: Path) -> Path | None:
     """Rename dest_path to a sidecar so it can be restored on failure.
 
@@ -830,6 +858,14 @@ def _process_files_with_overwrite(
 
             # Check for conflict
             if dest_path.exists() or dest_path.is_symlink():
+                # Refuse mismatched types: file vs. directory. The overwrite
+                # dialog only describes file metadata, so a "Yes" there would
+                # silently delete a whole directory tree.
+                mismatch = _type_mismatch_error(source_path, dest_path, operation_name)
+                if mismatch is not None:
+                    errors.append(f'{filename}: {mismatch}')
+                    continue
+
                 source_stat = source_path.stat()
                 dest_stat = dest_path.stat()
                 source_size = source_stat.st_size if source_path.is_file() else 0
