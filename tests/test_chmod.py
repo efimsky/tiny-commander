@@ -211,6 +211,41 @@ class TestChmodRecursive(unittest.TestCase):
             self.assertEqual(len(result.changed_files), 3)
 
 
+class TestChmodRecursiveDeepTree(unittest.TestCase):
+    """Deeply nested trees must not blow the Python recursion limit (issue #29)."""
+
+    def test_recursive_chmod_handles_tree_deeper_than_recursion_limit(self):
+        """A tree deeper than the current recursion limit must still chmod cleanly."""
+        import sys
+
+        # Use single-character names so OS path limits don't truncate the
+        # tree before we hit the recursion limit. Keep the depth modest
+        # but force the issue by lowering the recursion limit for this test.
+        depth = 200
+        original_limit = sys.getrecursionlimit()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            current = Path(tmpdir) / 'r'
+            current.mkdir()
+            top = current
+            for _ in range(depth):
+                current = current / 'd'
+                current.mkdir()
+            (current / 'l').write_text('data')
+
+            try:
+                # 100 frames is plenty for ChmodResult / pathlib internals
+                # but well below `depth` — the recursive impl would explode.
+                sys.setrecursionlimit(100)
+                result = chmod_recursive(top, 0o755, file_mode=0o644)
+                self.assertTrue(
+                    result.success,
+                    f'chmod_recursive failed on deep tree: {result.error[:200]!r}'
+                )
+            finally:
+                sys.setrecursionlimit(original_limit)
+
+
 class TestChmodRecursivePostOrder(unittest.TestCase):
     """chmod_recursive must descend before re-modeing the parent (issue #28)."""
 
