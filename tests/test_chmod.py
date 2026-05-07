@@ -211,5 +211,45 @@ class TestChmodRecursive(unittest.TestCase):
             self.assertEqual(len(result.changed_files), 3)
 
 
+class TestChmodRecursivePostOrder(unittest.TestCase):
+    """chmod_recursive must descend before re-modeing the parent (issue #28)."""
+
+    def test_recursive_chmod_strips_owner_x_still_processes_children(self):
+        """A dir_mode of 0o600 (no +x for owner) must still chmod every descendant."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / 'root'
+            inner = root / 'inner'
+            inner.mkdir(parents=True)
+            file1 = root / 'a.txt'
+            file2 = inner / 'b.txt'
+            file1.write_text('a')
+            file2.write_text('b')
+
+            try:
+                # 0o600 has no +x — descending into the dir would fail on most
+                # platforms once it's chmodded, so the parent must be chmodded
+                # AFTER the children to keep traversal alive.
+                result = chmod_recursive(root, 0o600, file_mode=0o600)
+
+                self.assertTrue(
+                    result.success,
+                    f'Expected success, got errors: {result.error!r}'
+                )
+                # Final mode: top-level dir is 0o600
+                self.assertEqual(stat.S_IMODE(root.stat().st_mode), 0o600)
+                # Restore +x on the parents so we can stat the descendants
+                os.chmod(root, 0o700)
+                os.chmod(inner, 0o700)
+                self.assertEqual(stat.S_IMODE(file1.stat().st_mode), 0o600)
+                self.assertEqual(stat.S_IMODE(file2.stat().st_mode), 0o600)
+            finally:
+                # Restore a sane mode so the temp dir can be cleaned up
+                os.chmod(root, 0o700)
+                try:
+                    os.chmod(inner, 0o700)
+                except OSError:
+                    pass
+
+
 if __name__ == '__main__':
     unittest.main()
