@@ -1,0 +1,149 @@
+"""Tests for Alt+Left / Alt+Right back/forward directory history navigation (issue #19)."""
+
+import curses
+import shutil
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+from tests.helpers import create_mock_stdscr
+from tnc.app import Action, App
+from tnc.panel import Panel
+
+
+class TestBackForwardStack(unittest.TestCase):
+    """Per-panel back/forward stack semantics."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name).resolve()
+        (self.root / 'alpha').mkdir()
+        (self.root / 'beta').mkdir()
+        (self.root / 'gamma').mkdir()
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def test_navigate_back_returns_false_on_empty_stack(self) -> None:
+        panel = Panel(str(self.root))
+        self.assertFalse(panel.navigate_back())
+        self.assertEqual(panel.path, self.root)
+
+    def test_navigate_forward_returns_false_on_empty_stack(self) -> None:
+        panel = Panel(str(self.root))
+        self.assertFalse(panel.navigate_forward())
+        self.assertEqual(panel.path, self.root)
+
+    def test_change_directory_pushes_previous_path_to_back_stack(self) -> None:
+        panel = Panel(str(self.root))
+        panel.change_directory(self.root / 'alpha')
+        self.assertEqual(panel._back_stack, [self.root])
+
+    def test_change_directory_clears_forward_stack_on_manual_nav(self) -> None:
+        panel = Panel(str(self.root))
+        # Build up some forward history: root → alpha, then back.
+        panel.change_directory(self.root / 'alpha')
+        panel.navigate_back()
+        self.assertEqual(panel._forward_stack, [self.root / 'alpha'])
+
+        # Now make a manual nav to a different dir; forward must be cleared.
+        panel.change_directory(self.root / 'beta')
+        self.assertEqual(panel._forward_stack, [])
+
+    def test_navigate_back_changes_dir_and_pushes_to_forward(self) -> None:
+        panel = Panel(str(self.root))
+        panel.change_directory(self.root / 'alpha')
+        self.assertTrue(panel.navigate_back())
+        self.assertEqual(panel.path, self.root)
+        self.assertEqual(panel._forward_stack, [self.root / 'alpha'])
+        self.assertEqual(panel._back_stack, [])
+
+    def test_navigate_forward_changes_dir_and_pushes_to_back(self) -> None:
+        panel = Panel(str(self.root))
+        panel.change_directory(self.root / 'alpha')
+        panel.navigate_back()
+        # Pre-conditions
+        self.assertEqual(panel.path, self.root)
+        self.assertEqual(panel._forward_stack, [self.root / 'alpha'])
+
+        self.assertTrue(panel.navigate_forward())
+        self.assertEqual(panel.path, self.root / 'alpha')
+        self.assertEqual(panel._back_stack, [self.root])
+        self.assertEqual(panel._forward_stack, [])
+
+    def test_back_forward_round_trip_preserves_state(self) -> None:
+        # A (root) → B (alpha) → C (beta), back → B, back → A, forward → B, forward → C.
+        panel = Panel(str(self.root))
+        panel.change_directory(self.root / 'alpha')
+        panel.change_directory(self.root / 'beta')
+        self.assertEqual(panel.path, self.root / 'beta')
+
+        self.assertTrue(panel.navigate_back())
+        self.assertEqual(panel.path, self.root / 'alpha')
+        self.assertTrue(panel.navigate_back())
+        self.assertEqual(panel.path, self.root)
+
+        self.assertTrue(panel.navigate_forward())
+        self.assertEqual(panel.path, self.root / 'alpha')
+        self.assertTrue(panel.navigate_forward())
+        self.assertEqual(panel.path, self.root / 'beta')
+
+        # After replaying all the way forward, forward stack is empty,
+        # back stack contains the full prefix.
+        self.assertEqual(panel._forward_stack, [])
+        self.assertEqual(panel._back_stack, [self.root, self.root / 'alpha'])
+
+    def test_change_directory_no_op_does_not_push(self) -> None:
+        panel = Panel(str(self.root))
+        panel.change_directory(self.root)  # same path
+        self.assertEqual(panel._back_stack, [])
+
+    def test_back_stack_respects_size_limit(self) -> None:
+        # Create LIMIT+1 distinct directories and visit each one.
+        limit = Panel._BACK_FORWARD_LIMIT
+        dirs = []
+        for i in range(limit + 1):
+            d = self.root / f'd{i:03d}'
+            d.mkdir()
+            dirs.append(d)
+
+        panel = Panel(str(self.root))
+        for d in dirs:
+            panel.change_directory(d)
+            # Bounce off a sibling so each manual nav pushes a unique entry.
+            panel.change_directory(self.root)
+
+        # After 2*(limit+1) pushes the back stack is bounded.
+        self.assertLessEqual(len(panel._back_stack), limit)
+        # Oldest entries should have been evicted (FIFO from the front).
+        self.assertNotIn(dirs[0], panel._back_stack)
+
+    def test_panels_have_independent_stacks(self) -> None:
+        panel_a = Panel(str(self.root))
+        panel_b = Panel(str(self.root))
+        panel_a.change_directory(self.root / 'alpha')
+        # Panel B should be untouched.
+        self.assertEqual(panel_b._back_stack, [])
+        self.assertEqual(panel_b.path, self.root)
+
+    def test_dotdot_navigation_pushes_to_back_stack(self) -> None:
+        panel = Panel(str(self.root / 'alpha'))
+        # '..' is at index 0
+        panel.cursor = 0
+        panel.enter()
+        self.assertEqual(panel.path, self.root)
+        # The '..' nav is a manual change, so back stack should contain alpha.
+        self.assertEqual(panel._back_stack, [self.root / 'alpha'])
+
+    def test_navigate_back_to_missing_directory_still_navigates(self) -> None:
+        panel = Panel(str(self.root))
+        panel.change_directory(self.root / 'alpha')
+        # Delete alpha while we're sitting in it
+        shutil.rmtree(self.root / 'alpha')
+
+        # Now go back to root: navigate_back() returns to a still-existing dir.
+        # First reverse the order: we're in (gone) alpha, going back lands on root.
+        # Refresh of current path will set error_message, but that's expected.
+        self.assertTrue(panel.navigate_back())
+        self.assertEqual(panel.path, self.root)
