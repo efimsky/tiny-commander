@@ -60,6 +60,8 @@ Insert      Toggle select current file
 *           Invert selection
 /           Quick search in current panel
 Alt+Enter   Insert filename into command line
+Alt+Left    Back through directory history
+Alt+Right   Forward through directory history
 Alt+O       Open in Finder (macOS only)
 Shift+F3    Cycle sort order (name/size/date/extension)
 Ctrl+F3     Toggle reverse sort (terminal-dependent)

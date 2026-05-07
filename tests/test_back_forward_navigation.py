@@ -147,3 +147,74 @@ class TestBackForwardStack(unittest.TestCase):
         # Refresh of current path will set error_message, but that's expected.
         self.assertTrue(panel.navigate_back())
         self.assertEqual(panel.path, self.root)
+
+
+class TestAltLeftRightHandling(unittest.TestCase):
+    """App-level Alt+Left / Alt+Right key routing."""
+
+    def setUp(self) -> None:
+        self.patches = [
+            mock.patch('curses.has_colors', return_value=False),
+            mock.patch('curses.curs_set'),
+        ]
+        for p in self.patches:
+            p.start()
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.cwd_patch = mock.patch('os.getcwd', return_value=self.tmp.name)
+        self.cwd_patch.start()
+
+        self.app = App(create_mock_stdscr())
+        self.app.setup()
+
+    def tearDown(self) -> None:
+        self.cwd_patch.stop()
+        self.tmp.cleanup()
+        for p in self.patches:
+            p.stop()
+
+    def _press_alt(self, follow_up_key: int) -> Action:
+        """Simulate Alt+<follow_up_key> via the Esc-prefix sequence."""
+        self.app.stdscr.nodelay.return_value = None
+        self.app.stdscr.getch.return_value = follow_up_key
+        return self.app.handle_key(27)  # Escape
+
+    def test_alt_left_calls_active_panel_navigate_back(self) -> None:
+        with mock.patch.object(self.app.active_panel, 'navigate_back') as mock_back, \
+             mock.patch.object(self.app.command_line, 'set_path') as mock_set_path:
+            mock_back.return_value = True
+            self._press_alt(curses.KEY_LEFT)
+            mock_back.assert_called_once_with()
+            mock_set_path.assert_called_once_with(str(self.app.active_panel.path))
+
+    def test_alt_right_calls_active_panel_navigate_forward(self) -> None:
+        with mock.patch.object(self.app.active_panel, 'navigate_forward') as mock_fwd, \
+             mock.patch.object(self.app.command_line, 'set_path') as mock_set_path:
+            mock_fwd.return_value = True
+            self._press_alt(curses.KEY_RIGHT)
+            mock_fwd.assert_called_once_with()
+            mock_set_path.assert_called_once_with(str(self.app.active_panel.path))
+
+    def test_alt_left_returns_action_none(self) -> None:
+        action = self._press_alt(curses.KEY_LEFT)
+        self.assertEqual(action, Action.NONE)
+
+    def test_alt_right_returns_action_none(self) -> None:
+        action = self._press_alt(curses.KEY_RIGHT)
+        self.assertEqual(action, Action.NONE)
+
+    def test_plain_left_arrow_still_drives_command_line(self) -> None:
+        # Plain Left (no preceding Esc) must continue to drive the command-line cursor
+        # and must NOT call navigate_back.
+        with mock.patch.object(self.app.active_panel, 'navigate_back') as mock_back, \
+             mock.patch.object(self.app.command_line, 'handle_key') as mock_cl_key:
+            self.app.handle_key(curses.KEY_LEFT)
+            mock_back.assert_not_called()
+            mock_cl_key.assert_called_once_with(curses.KEY_LEFT)
+
+    def test_alt_left_on_empty_stack_is_silent(self) -> None:
+        # Default app state: no prior navigation, back stack empty.
+        original_path = self.app.active_panel.path
+        action = self._press_alt(curses.KEY_LEFT)
+        self.assertEqual(action, Action.NONE)
+        self.assertEqual(self.app.active_panel.path, original_path)
