@@ -241,3 +241,44 @@ class TestAltLeftRightHandling(unittest.TestCase):
         action = self._press_alt(curses.KEY_LEFT)
         self.assertEqual(action, Action.NONE)
         self.assertEqual(self.app.active_panel.path, original_path)
+
+    def test_alt_left_actually_changes_panel_path_end_to_end(self) -> None:
+        # No mocks on the panel: populate the back stack via a real navigation,
+        # then press Alt+Left and assert the panel and command line both moved.
+        root = Path(self.tmp.name).resolve()
+        (root / 'sub').mkdir()
+        self.app.active_panel.change_directory(root / 'sub')
+        self.assertEqual(self.app.active_panel.path, root / 'sub')
+
+        self._press_alt(curses.KEY_LEFT)
+
+        self.assertEqual(self.app.active_panel.path, root)
+        self.assertEqual(self.app.command_line.path, str(root))
+
+    def test_panel_switch_preserves_each_panels_history(self) -> None:
+        # Navigate on the active (left) panel, switch to right, navigate there,
+        # switch back, and confirm Alt+Left still reflects the left panel's
+        # private history.
+        root = Path(self.tmp.name).resolve()
+        (root / 'left_child').mkdir()
+        (root / 'right_child').mkdir()
+
+        # Build history on the left panel.
+        self.app.active_panel.change_directory(root / 'left_child')
+        self.assertEqual(self.app.active_panel.path, root / 'left_child')
+        left_back_before_switch = list(self.app.left_panel._back_stack)
+
+        # Switch to right panel and navigate independently.
+        self.app.switch_panel()
+        self.assertIs(self.app.active_panel, self.app.right_panel)
+        self.app.active_panel.change_directory(root / 'right_child')
+
+        # Switch back to left and confirm its stack is untouched by the right's nav.
+        self.app.switch_panel()
+        self.assertIs(self.app.active_panel, self.app.left_panel)
+        self.assertEqual(self.app.left_panel._back_stack, left_back_before_switch)
+
+        # Alt+Left now walks the left panel back, not the right's.
+        self._press_alt(curses.KEY_LEFT)
+        self.assertEqual(self.app.left_panel.path, root)
+        self.assertEqual(self.app.right_panel.path, root / 'right_child')
