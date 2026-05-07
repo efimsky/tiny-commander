@@ -872,13 +872,21 @@ class App:
 
         return dialog.show(self.stdscr)
 
+    def _save_config_or_warn(self) -> None:
+        """Persist config; show a non-fatal dialog if the write fails."""
+        if not self.config.save():
+            show_error_dialog(
+                self.stdscr, 'Error',
+                f'Could not save config to {self.config.path}'
+            )
+
     def _prompt_pager_setup(self) -> None:
         """Prompt user to select a pager."""
         options = Config.get_available_pagers()
         selected = self._prompt_tool_setup('pager', options)
         if selected:
             self.config.pager = selected
-            self.config.save()
+            self._save_config_or_warn()
 
     def _prompt_editor_setup(self) -> None:
         """Prompt user to select an editor."""
@@ -886,7 +894,7 @@ class App:
         selected = self._prompt_tool_setup('editor', options)
         if selected:
             self.config.editor = selected
-            self.config.save()
+            self._save_config_or_warn()
 
     def _toggle_classic_colors(self) -> None:
         """Toggle between classic mc-style blue and modern transparent theme."""
@@ -895,7 +903,7 @@ class App:
         set_classic_theme(new_value)
         # Save to config
         self.config.classic_colors = new_value
-        self.config.save()
+        self._save_config_or_warn()
 
     def _enable_mouse(self) -> bool:
         """Enable mouse event capture.
@@ -937,7 +945,7 @@ class App:
         else:
             self._enable_mouse()
             self.config.mouse_enabled = True
-        self.config.save()
+        self._save_config_or_warn()
 
     def _toggle_menu_dropdown(self) -> None:
         """Toggle menu dropdown open/closed."""
@@ -948,7 +956,7 @@ class App:
     def _toggle_mouse_swap(self) -> None:
         """Toggle mouse button swap (for left-handed users) and save to config."""
         self.config.mouse_swap = not self.config.mouse_swap
-        self.config.save()
+        self._save_config_or_warn()
 
     def _translate_button_state(self, button_state: int) -> int:
         """Translate mouse button state based on swap setting.

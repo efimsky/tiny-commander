@@ -227,6 +227,42 @@ class TestMouseSwapConfig(unittest.TestCase):
             self.assertIn('mouse_swap = no', content)
 
 
+class TestConfigSaveErrorReporting(unittest.TestCase):
+    """Config.save should report failure rather than crash the caller (issue #26)."""
+
+    def test_save_returns_true_on_success(self):
+        """Successful writes return True."""
+        from tnc.config import Config
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / 'config'
+            config = Config()
+            self.assertTrue(config.save(str(config_path)))
+
+    def test_save_returns_false_when_path_unwritable(self):
+        """When the open() raises OSError, save returns False rather than propagating."""
+        from unittest import mock
+        from tnc.config import Config
+
+        config = Config()
+        with mock.patch('builtins.open', side_effect=PermissionError('readonly')):
+            result = config.save('/some/path/config')
+
+        self.assertFalse(result)
+
+    def test_save_returns_false_when_disk_full(self):
+        """OSError during write must be swallowed and surface as a False return."""
+        from unittest import mock
+        from tnc.config import Config
+
+        config = Config()
+        m = mock.mock_open()
+        m.return_value.write.side_effect = OSError('disk full')
+        with mock.patch('builtins.open', m):
+            result = config.save('/some/path/config')
+
+        self.assertFalse(result)
+
+
 class TestConfigPreserveUnknown(unittest.TestCase):
     """Test preserving unknown config keys."""
 
