@@ -136,17 +136,40 @@ class TestBackForwardStack(unittest.TestCase):
         # The '..' nav is a manual change, so back stack should contain alpha.
         self.assertEqual(panel._back_stack, [self.root / 'alpha'])
 
-    def test_navigate_back_to_missing_directory_still_navigates(self) -> None:
+    def test_navigate_back_from_missing_directory_returns_to_existing(self) -> None:
+        # Sitting in a directory that gets removed externally: Alt+Left should
+        # still take us to the previous (still existing) location.
         panel = Panel(str(self.root))
         panel.change_directory(self.root / 'alpha')
-        # Delete alpha while we're sitting in it
         shutil.rmtree(self.root / 'alpha')
 
-        # Now go back to root: navigate_back() returns to a still-existing dir.
-        # First reverse the order: we're in (gone) alpha, going back lands on root.
-        # Refresh of current path will set error_message, but that's expected.
         self.assertTrue(panel.navigate_back())
         self.assertEqual(panel.path, self.root)
+
+    def test_navigate_back_to_missing_target_sets_error_message(self) -> None:
+        # Now the inverse: we navigate away from a directory that later gets
+        # removed, and Alt+Left tries to return to it. We accept the path
+        # (resolve doesn't require existence) but refresh surfaces the error.
+        panel = Panel(str(self.root / 'alpha'))
+        panel.change_directory(self.root)
+        shutil.rmtree(self.root / 'alpha')
+
+        self.assertTrue(panel.navigate_back())
+        self.assertEqual(panel.path, self.root / 'alpha')
+        self.assertIsNotNone(panel.error_message)
+
+    def test_external_change_resets_back_forward_stacks(self) -> None:
+        # An external (e.g. command-line) jump is a fresh start; both stacks
+        # should be wiped so Alt+Left/Right don't pop into the prior session.
+        panel = Panel(str(self.root))
+        panel.change_directory(self.root / 'alpha')
+        panel.change_directory(self.root / 'beta')
+        # Pre-condition: stacks are populated
+        self.assertEqual(len(panel._back_stack), 2)
+
+        panel.change_directory(self.root / 'gamma', external=True)
+        self.assertEqual(panel._back_stack, [])
+        self.assertEqual(panel._forward_stack, [])
 
 
 class TestAltLeftRightHandling(unittest.TestCase):

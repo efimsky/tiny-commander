@@ -101,9 +101,9 @@ def render_panel_entries(
 class Panel:
     """A panel displaying directory contents."""
 
-    # Maximum number of entries in navigation history
+    # Cap on the breadcrumb cache (parent path -> remembered child name).
     _HISTORY_LIMIT = 50
-    # Maximum number of entries in the back/forward directory stacks
+    # Independent cap on the Alt+Left/Right directory back & forward stacks.
     _BACK_FORWARD_LIMIT = 50
 
     def __init__(self, path: str, width: int = 40, height: int = 20) -> None:
@@ -651,18 +651,23 @@ class Panel:
 
         Args:
             new_path: The new directory path.
-            external: If True, clear navigation history (for command-line nav).
+            external: If True, treat as a fresh-start jump: clear breadcrumb
+                cache and the Alt+Left/Right back/forward stacks (for
+                command-line nav or other external triggers).
             _from_history: Internal flag set by navigate_back/navigate_forward
                 so the back/forward stacks aren't mutated by the history step
                 itself.
         """
         if external:
             self._navigation_history.clear()
+            self._back_stack.clear()
+            self._forward_stack.clear()
 
         resolved = new_path.resolve()
-        # On a manual (non-history) directory change, record where we came from
-        # for Alt+Left and discard any pending forward history.
-        if not _from_history and resolved != self.path:
+        # On a manual (non-history, non-external) directory change, record
+        # where we came from for Alt+Left and discard any pending forward
+        # history. External jumps wiped both stacks above and start fresh.
+        if not _from_history and not external and resolved != self.path:
             self._back_stack.append(self.path)
             if len(self._back_stack) > self._BACK_FORWARD_LIMIT:
                 self._back_stack.pop(0)
