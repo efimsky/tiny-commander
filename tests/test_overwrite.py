@@ -341,6 +341,70 @@ class TestOverwriteOlder(unittest.TestCase):
                 self.assertEqual(len(result.skipped_files), 1)
 
 
+class TestOverwriteTypeMismatch(unittest.TestCase):
+    """Refuse to overwrite when source and destination types differ."""
+
+    def test_file_over_directory_refused(self):
+        """Copying a file onto a directory of the same name must not delete the directory."""
+        with tempfile.TemporaryDirectory() as source_dir:
+            with tempfile.TemporaryDirectory() as dest_dir:
+                Path(source_dir, 'notes').write_text('a single file')
+                dst_dir = Path(dest_dir, 'notes')
+                dst_dir.mkdir()
+                (dst_dir / 'inner.txt').write_text('precious')
+                handler = MockOverwriteHandler([OverwriteChoice.YES])
+
+                result = copy_files_with_overwrite(
+                    ['notes'], source_dir, dest_dir, handler
+                )
+
+                self.assertFalse(result.success)
+                self.assertIn('directory', result.error.lower())
+                self.assertEqual(handler.prompt_count, 0,
+                    'Should not prompt — refusal must precede prompting')
+                self.assertTrue(dst_dir.is_dir())
+                self.assertEqual((dst_dir / 'inner.txt').read_text(), 'precious')
+
+    def test_directory_over_file_refused(self):
+        """Copying a directory onto a file of the same name must not delete the file."""
+        with tempfile.TemporaryDirectory() as source_dir:
+            with tempfile.TemporaryDirectory() as dest_dir:
+                src_dir = Path(source_dir, 'notes')
+                src_dir.mkdir()
+                (src_dir / 'a.txt').write_text('source')
+                dst_file = Path(dest_dir, 'notes')
+                dst_file.write_text('precious file content')
+                handler = MockOverwriteHandler([OverwriteChoice.YES])
+
+                result = copy_files_with_overwrite(
+                    ['notes'], source_dir, dest_dir, handler
+                )
+
+                self.assertFalse(result.success)
+                self.assertIn('directory', result.error.lower())
+                self.assertEqual(handler.prompt_count, 0)
+                self.assertTrue(dst_file.is_file())
+                self.assertEqual(dst_file.read_text(), 'precious file content')
+
+    def test_move_file_over_directory_refused(self):
+        """Move must also refuse mismatched types."""
+        with tempfile.TemporaryDirectory() as source_dir:
+            with tempfile.TemporaryDirectory() as dest_dir:
+                Path(source_dir, 'notes').write_text('a single file')
+                dst_dir = Path(dest_dir, 'notes')
+                dst_dir.mkdir()
+                (dst_dir / 'inner.txt').write_text('precious')
+                handler = MockOverwriteHandler([OverwriteChoice.YES])
+
+                result = move_files_with_overwrite(
+                    ['notes'], source_dir, dest_dir, handler
+                )
+
+                self.assertFalse(result.success)
+                self.assertTrue(dst_dir.is_dir())
+                self.assertEqual((dst_dir / 'inner.txt').read_text(), 'precious')
+
+
 class TestOverwriteRollback(unittest.TestCase):
     """Test that a failed overwrite leaves the original destination intact."""
 
