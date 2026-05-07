@@ -315,14 +315,27 @@ def chmod_recursive(
     errors: list[str] = []
 
     def process_path(p: Path) -> None:
-        """Process a single path, recursing into directories."""
+        """Process a single path, recursing into directories.
+
+        Post-order: children are chmodded BEFORE the parent so that a
+        dir_mode which strips +x from the owner doesn't lock us out of
+        descending into the directory we just modified.
+        """
         try:
-            if p.is_dir() and not p.is_symlink():
+            is_real_dir = p.is_dir() and not p.is_symlink()
+            if is_real_dir:
+                # Snapshot children before touching the parent — the
+                # iterdir generator would otherwise traverse a directory
+                # whose mode is changing under us.
+                try:
+                    children = list(p.iterdir())
+                except OSError as err:
+                    errors.append(f'{p}: {err}')
+                    children = []
+                for child in children:
+                    process_path(child)
                 os.chmod(p, dir_mode)
                 changed.append(str(p))
-                # Process contents
-                for child in p.iterdir():
-                    process_path(child)
             else:
                 os.chmod(p, file_mode)
                 changed.append(str(p))
