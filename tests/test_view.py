@@ -210,5 +210,33 @@ class TestViewPagerNotFound(unittest.TestCase):
                 self.assertIn('not found', result.error.lower())
 
 
+class TestViewNonZeroExit(unittest.TestCase):
+    """Pager that exits non-zero must be reported as failure (issue #24)."""
+
+    @mock.patch('curses.has_colors', return_value=False)
+    @mock.patch('curses.curs_set')
+    @mock.patch('curses.endwin')
+    @mock.patch('tnc.app.subprocess.run')
+    def test_view_non_zero_exit_returns_failure(
+        self, mock_run, _endwin, _curs_set, _has_colors
+    ):
+        """Pager exiting non-zero should propagate to ViewResult.success=False."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            test_file = Path(tmpdir) / 'test.txt'
+            test_file.write_text('content')
+            mock_run.return_value = mock.MagicMock(returncode=2)
+
+            with mock.patch('os.getcwd', return_value=tmpdir):
+                app = App(create_mock_stdscr())
+                app.setup()
+                app.config.pager = 'less'
+                app.active_panel.cursor = find_entry_index(app.active_panel, 'test.txt')
+
+                result = app.view_current_file()
+
+                self.assertFalse(result.success)
+                self.assertIn('2', result.error)
+
+
 if __name__ == '__main__':
     unittest.main()
