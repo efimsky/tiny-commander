@@ -1,21 +1,30 @@
-#!/usr/bin/env python3
-"""Tiny Commander - A lightweight dual-pane file manager."""
+#!/bin/sh
+# Tiny Commander launcher.
+#
+# Picks the newest python3.X (X >= 13) available on PATH, so users with both
+# an older `python3` symlink (e.g. 3.12) and a newer interpreter installed
+# alongside it (e.g. /usr/bin/python3.14) automatically get the newer one.
+#
+# Falls back to plain `python3` when no versioned binary is found, letting
+# tnc/_version_check.py print a clean "requires 3.13+" error if it's too old.
 
-import sys
-import os
+case "$0" in
+    */*) SCRIPT_DIR=$(cd "${0%/*}" && pwd) ;;
+    *)   SCRIPT_DIR=$(pwd) ;;
+esac
+PROJECT_ROOT=${SCRIPT_DIR%/*}
+export PYTHONPATH="$PROJECT_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
-# Add the parent directory to the path so we can import tnc
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Newest first. Extend the list as new Python releases ship.
+for ver in 3.20 3.19 3.18 3.17 3.16 3.15 3.14 3.13; do
+    if command -v "python${ver}" >/dev/null 2>&1; then
+        exec "python${ver}" -m tnc "$@"
+    fi
+done
 
-# Check Python version BEFORE importing modules that use 3.10+ syntax
-from tnc._version_check import check_python_version
+if command -v python3 >/dev/null 2>&1; then
+    exec python3 -m tnc "$@"
+fi
 
-_version_error = check_python_version()
-if _version_error:
-    sys.stderr.write(_version_error + "\n")
-    sys.exit(1)
-
-from tnc.__main__ import main
-
-if __name__ == "__main__":
-    sys.exit(main())
+echo "tnc requires Python 3.13 or newer (no python3 found on PATH)." >&2
+exit 1
