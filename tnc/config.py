@@ -83,28 +83,29 @@ class Config:
 
         return config
 
-    def save(self, path: str | None = None) -> None:
+    def save(self, path: str | None = None) -> bool:
         """Save config to a file.
 
-        Args:
-            path: Path to config file. If None, uses the stored path.
+        Returns True on success, False if the write fails (disk full,
+        read-only filesystem, permission denied). Callers must check the
+        return value rather than letting an OSError tear down the UI.
         """
         save_path = path if path is not None else self.path
-        Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-
-        with open(save_path, 'w') as f:
-            if self.editor is not None:
-                f.write(f'editor = {self.editor}\n')
-            if self.pager is not None:
-                f.write(f'pager = {self.pager}\n')
-            # Always write classic_colors setting
-            f.write(f'classic_colors = {"yes" if self.classic_colors else "no"}\n')
-            # Always write mouse_enabled setting
-            f.write(f'mouse_enabled = {"yes" if self.mouse_enabled else "no"}\n')
-            # Always write mouse_swap setting
-            f.write(f'mouse_swap = {"yes" if self.mouse_swap else "no"}\n')
-            for key, value in self._unknown_keys.items():
-                f.write(f'{key} = {value}\n')
+        try:
+            Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+            with open(save_path, 'w') as f:
+                if self.editor is not None:
+                    f.write(f'editor = {self.editor}\n')
+                if self.pager is not None:
+                    f.write(f'pager = {self.pager}\n')
+                f.write(f'classic_colors = {"yes" if self.classic_colors else "no"}\n')
+                f.write(f'mouse_enabled = {"yes" if self.mouse_enabled else "no"}\n')
+                f.write(f'mouse_swap = {"yes" if self.mouse_swap else "no"}\n')
+                for key, value in self._unknown_keys.items():
+                    f.write(f'{key} = {value}\n')
+        except OSError:
+            return False
+        return True
 
     def needs_editor_setup(self) -> bool:
         """Check if editor setup is needed.
