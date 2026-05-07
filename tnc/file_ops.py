@@ -724,6 +724,55 @@ def delete_files(filenames: list[str], parent_dir: str | Path) -> DeleteResult:
     return DeleteResult(success=True, deleted_files=deleted)
 
 
+def _move_aside(dest_path: Path) -> Path | None:
+    """Rename dest_path to a sidecar so it can be restored on failure.
+
+    Returns the sidecar path, or None if dest_path did not exist.
+    """
+    if not (dest_path.exists() or dest_path.is_symlink()):
+        return None
+    for attempt in range(100):
+        sidecar = dest_path.with_name(f'{dest_path.name}.tnc-replace-{os.getpid()}-{attempt}')
+        if sidecar.exists() or sidecar.is_symlink():
+            continue
+        os.rename(dest_path, sidecar)
+        return sidecar
+    raise OSError('could not allocate sidecar name for atomic overwrite')
+
+
+def _rollback_sidecar(dest_path: Path, sidecar: Path | None) -> None:
+    """Restore the sidecar back to dest_path after a failed operation."""
+    if sidecar is None:
+        return
+    # Remove any partial result that the failed operation may have left behind.
+    if dest_path.exists() or dest_path.is_symlink():
+        if dest_path.is_dir() and not dest_path.is_symlink():
+            shutil.rmtree(dest_path, ignore_errors=True)
+        else:
+            try:
+                dest_path.unlink()
+            except OSError:
+                pass
+    try:
+        os.rename(sidecar, dest_path)
+    except OSError:
+        # Last resort: leave the sidecar in place rather than losing data
+        pass
+
+
+def _drop_sidecar(sidecar: Path | None) -> None:
+    """Remove a successfully replaced sidecar."""
+    if sidecar is None:
+        return
+    if sidecar.is_dir() and not sidecar.is_symlink():
+        shutil.rmtree(sidecar, ignore_errors=True)
+    else:
+        try:
+            sidecar.unlink()
+        except OSError:
+            pass
+
+
 def _process_files_with_overwrite(
     filenames: list[str],
     source_dir: str | Path,
@@ -813,11 +862,19 @@ def _process_files_with_overwrite(
                     skipped.append(filename)
                     continue
 
-                # Remove existing file/dir before operation
-                if dest_path.is_dir() and not dest_path.is_symlink():
-                    shutil.rmtree(dest_path)
+                # Rename existing dest aside before the operation. If the op
+                # then fails the sidecar is rolled back, so the user is never
+                # left with a half-deleted destination and no source copy.
+                sidecar = _move_aside(dest_path)
+                try:
+                    operation(source_path, dest_path)
+                except BaseException:
+                    _rollback_sidecar(dest_path, sidecar)
+                    raise
                 else:
-                    dest_path.unlink()
+                    _drop_sidecar(sidecar)
+                processed.append(filename)
+                continue
 
             operation(source_path, dest_path)
             processed.append(filename)

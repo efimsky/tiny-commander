@@ -341,5 +341,70 @@ class TestOverwriteOlder(unittest.TestCase):
                 self.assertEqual(len(result.skipped_files), 1)
 
 
+class TestOverwriteRollback(unittest.TestCase):
+    """Test that a failed overwrite leaves the original destination intact."""
+
+    def test_failed_copy_preserves_original_destination(self):
+        """When copy fails after the user confirmed overwrite, the destination must not be lost."""
+        from unittest import mock
+        from tnc import file_ops
+
+        with tempfile.TemporaryDirectory() as source_dir:
+            with tempfile.TemporaryDirectory() as dest_dir:
+                Path(source_dir, 'file.txt').write_text('source content')
+                dest_file = Path(dest_dir, 'file.txt')
+                dest_file.write_text('precious dest content')
+                handler = MockOverwriteHandler([OverwriteChoice.YES])
+
+                with mock.patch.object(
+                    file_ops, '_copy_item',
+                    side_effect=OSError('disk simulated full')
+                ):
+                    result = copy_files_with_overwrite(
+                        ['file.txt'], source_dir, dest_dir, handler
+                    )
+
+                self.assertFalse(result.success)
+                # The original destination must still be there with its original content
+                self.assertTrue(dest_file.exists())
+                self.assertEqual(dest_file.read_text(), 'precious dest content')
+                # No leftover sidecar files
+                leftovers = [p.name for p in Path(dest_dir).iterdir()]
+                self.assertEqual(leftovers, ['file.txt'])
+
+    def test_failed_directory_overwrite_preserves_original(self):
+        """A failed directory overwrite should leave the original tree intact."""
+        from unittest import mock
+        from tnc import file_ops
+
+        with tempfile.TemporaryDirectory() as source_dir:
+            with tempfile.TemporaryDirectory() as dest_dir:
+                src_tree = Path(source_dir, 'data')
+                src_tree.mkdir()
+                (src_tree / 'a.txt').write_text('new')
+
+                dst_tree = Path(dest_dir, 'data')
+                dst_tree.mkdir()
+                (dst_tree / 'b.txt').write_text('original-b')
+                (dst_tree / 'c.txt').write_text('original-c')
+
+                handler = MockOverwriteHandler([OverwriteChoice.YES])
+
+                with mock.patch.object(
+                    file_ops, '_copy_item',
+                    side_effect=OSError('simulated copy failure')
+                ):
+                    result = copy_files_with_overwrite(
+                        ['data'], source_dir, dest_dir, handler
+                    )
+
+                self.assertFalse(result.success)
+                self.assertTrue(dst_tree.is_dir())
+                self.assertEqual((dst_tree / 'b.txt').read_text(), 'original-b')
+                self.assertEqual((dst_tree / 'c.txt').read_text(), 'original-c')
+                leftovers = sorted(p.name for p in Path(dest_dir).iterdir())
+                self.assertEqual(leftovers, ['data'])
+
+
 if __name__ == '__main__':
     unittest.main()
