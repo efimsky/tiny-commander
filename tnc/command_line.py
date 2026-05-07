@@ -224,6 +224,10 @@ class CommandLine:
             return None
 
         try:
+            # nosemgrep: subprocess-shell-true
+            # Intentional: `command` is the user's input from the command-line
+            # bar; shell=True is what enables pipes, redirects, globs, and
+            # env-var expansion that users expect from that bar.
             result = subprocess.run(
                 command,
                 shell=True,
