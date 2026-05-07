@@ -35,6 +35,7 @@ from tnc.function_bar import FunctionBar
 from tnc.menu import MenuBar
 from tnc.panel import Panel
 from tnc.status_bar import StatusBar
+from tnc.utils import safe_addstr
 
 
 class Action(Enum):
@@ -1522,11 +1523,10 @@ class App:
         if not full_path.is_dir():
             return
 
-        # Show calculating message
-        self.stdscr.addstr(
-            self.stdscr.getmaxyx()[0] - 2, 0,
-            'Calculating...'.ljust(self.stdscr.getmaxyx()[1])
-        )
+        # Show calculating message — use safe_addstr because narrow terminals
+        # would otherwise raise curses.error and crash the app loop.
+        rows, cols = self.stdscr.getmaxyx()
+        safe_addstr(self.stdscr, rows - 2, 0, 'Calculating...'.ljust(cols))
         self.stdscr.refresh()
 
         # Calculate size and cache it

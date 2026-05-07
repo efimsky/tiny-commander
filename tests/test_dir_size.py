@@ -1,9 +1,11 @@
 """Tests for directory size calculation functionality."""
 
+import curses
 import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from tnc.file_ops import calculate_dir_size
 
@@ -166,6 +168,43 @@ class TestCalculateDirSize(unittest.TestCase):
         size = calculate_dir_size(test_dir)
 
         self.assertIsInstance(size, int)
+
+
+class TestMeasureDirSizeNarrowTerminal(unittest.TestCase):
+    """Alt+F3 must not crash on narrow terminals (issue #25)."""
+
+    def test_calculating_message_does_not_crash_on_narrow_terminal(self) -> None:
+        """Status line write must be wrapped — narrow terminals make raw addstr raise."""
+        from tests.helpers import create_mock_stdscr, find_entry_index
+        from tnc.app import App
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sub = Path(tmpdir) / 'sub'
+            sub.mkdir()
+            (sub / 'file.txt').write_text('content')
+
+            stdscr = create_mock_stdscr(rows=24, cols=20)
+
+            def narrow_addstr(*args, **kwargs):
+                # Mimic ncurses behavior: writing through to the bottom-right
+                # corner raises because the cursor advance would scroll.
+                if len(args) >= 3 and isinstance(args[2], str):
+                    text = args[2]
+                    x = args[1] if isinstance(args[1], int) else 0
+                    if x + len(text) >= 20:
+                        raise curses.error('addwstr() returned ERR')
+
+            stdscr.addstr = mock.Mock(side_effect=narrow_addstr)
+
+            with mock.patch('curses.has_colors', return_value=False), \
+                 mock.patch('curses.curs_set'), \
+                 mock.patch('curses.mousemask'), \
+                 mock.patch('os.getcwd', return_value=tmpdir):
+                app = App(stdscr)
+                app.setup()
+                app.active_panel.cursor = find_entry_index(app.active_panel, 'sub')
+                # Pre-fix this raised curses.error and crashed the app loop.
+                app._measure_dir_size()
 
 
 if __name__ == '__main__':
