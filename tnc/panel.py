@@ -170,9 +170,18 @@ class Panel:
             if not self.show_hidden:
                 items = [p for p in items if not p.name.startswith('.')]
 
-            # Separate directories and files
-            dirs = [p for p in items if p.is_dir()]
-            files = [p for p in items if not p.is_dir()]
+            # Separate directories and files. A single bad inode (stale NFS
+            # handle, transient permission issue) must not nuke the whole
+            # listing — classify the unreadable entry as a file so the user
+            # still sees it and can act on it.
+            dirs: list[Path] = []
+            files: list[Path] = []
+            for p in items:
+                try:
+                    is_dir = p.is_dir()
+                except OSError:
+                    is_dir = False
+                (dirs if is_dir else files).append(p)
 
             # Sort both lists according to current sort order
             dirs = self._sort_entries(dirs)

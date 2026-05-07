@@ -117,6 +117,32 @@ class TestPanelRefresh(unittest.TestCase):
         panel = Panel('/nonexistent/path/that/does/not/exist', width=40, height=20)
         self.assertIsNotNone(panel.error_message)
 
+    def test_refresh_keeps_listing_when_one_entry_stat_fails(self):
+        """A single failing stat must not nuke the whole listing (issue #30)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            good = Path(tmpdir, 'good.txt')
+            good.touch()
+            bad = Path(tmpdir, 'bad.txt')
+            bad.touch()
+
+            real_is_dir = Path.is_dir
+
+            def flaky_is_dir(self_path):
+                if self_path.name == 'bad.txt':
+                    raise OSError('stale NFS handle')
+                return real_is_dir(self_path)
+
+            with mock.patch.object(Path, 'is_dir', flaky_is_dir):
+                panel = Panel(tmpdir, width=40, height=20)
+
+            names = [e.name for e in panel.entries]
+            self.assertIn('good.txt', names,
+                'good.txt should still be listed despite bad.txt failing')
+            self.assertIn('bad.txt', names,
+                'bad.txt should also appear (classified as a file) so the user can act on it')
+            self.assertIsNone(panel.error_message,
+                'A per-entry stat failure must not set a panel-level error')
+
 
 class TestPanelHeaderText(unittest.TestCase):
     """Test Panel.get_header_text() path display."""
