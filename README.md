@@ -68,6 +68,8 @@ chmod +x tnc
 | `*` | Invert selection |
 | `/` | Quick search |
 | `Alt+Enter` | Insert filename into command line |
+| `Alt+←` | Back through directory history |
+| `Alt+→` | Forward through directory history |
 | `Shift+F3` | Cycle sort order (name/size/date/extension) |
 | `Ctrl+F3` | Toggle reverse sort (terminal-dependent) |
 | `Shift+F4` | Create new file (opens in editor) |

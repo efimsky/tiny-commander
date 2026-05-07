@@ -103,6 +103,7 @@ class Panel:
 
     # Maximum number of entries in navigation history
     _HISTORY_LIMIT = 50
+    _BACK_FORWARD_LIMIT = 50
 
     def __init__(self, path: str, width: int = 40, height: int = 20) -> None:
         """Initialize the panel.
@@ -133,6 +134,9 @@ class Panel:
         # Navigation history: maps parent path -> child directory name
         # Used to remember position when navigating up via '..'
         self._navigation_history: dict[Path, str] = {}
+        # Back/forward stacks for Alt+Left / Alt+Right history navigation
+        self._back_stack: list[Path] = []
+        self._forward_stack: list[Path] = []
         # Cached directory sizes: maps full path -> size in bytes
         # Persists for the entire session (not cleared on directory change)
         self._dir_size_cache: dict[Path, int] = {}
@@ -634,17 +638,35 @@ class Panel:
         # It's a file - return path for editing
         return full_path
 
-    def change_directory(self, new_path: Path, external: bool = False) -> None:
+    def change_directory(
+        self,
+        new_path: Path,
+        external: bool = False,
+        *,
+        _from_history: bool = False,
+    ) -> None:
         """Change to a new directory.
 
         Args:
             new_path: The new directory path.
-            external: If True, clear navigation history (for command-line nav).
+            external: If True, clear navigation history and back/forward stacks
+                (for command-line nav or other external triggers).
+            _from_history: Internal flag for navigate_back/navigate_forward to
+                avoid mutating back/forward stacks during a history step.
         """
         if external:
             self._navigation_history.clear()
+            self._back_stack.clear()
+            self._forward_stack.clear()
 
-        self.path = new_path.resolve()
+        resolved = new_path.resolve()
+        if not _from_history and not external and resolved != self.path:
+            self._back_stack.append(self.path)
+            if len(self._back_stack) > self._BACK_FORWARD_LIMIT:
+                self._back_stack.pop(0)
+            self._forward_stack.clear()
+
+        self.path = resolved
         self.scroll_offset = 0
         self.selected.clear()
         # Note: _dir_size_cache is NOT cleared - it persists for the session
@@ -655,6 +677,29 @@ class Panel:
         restored_index = self._find_entry_index(remembered_child) if remembered_child else None
         self.cursor = restored_index if restored_index is not None else 0
         self._adjust_scroll()
+
+    def _push_capped(self, stack: list[Path], path: Path) -> None:
+        stack.append(path)
+        if len(stack) > self._BACK_FORWARD_LIMIT:
+            stack.pop(0)
+
+    def navigate_back(self) -> bool:
+        """Step to the previous directory; returns False if back stack is empty."""
+        if not self._back_stack:
+            return False
+        target = self._back_stack.pop()
+        self._push_capped(self._forward_stack, self.path)
+        self.change_directory(target, _from_history=True)
+        return True
+
+    def navigate_forward(self) -> bool:
+        """Step to the next directory; returns False if forward stack is empty."""
+        if not self._forward_stack:
+            return False
+        target = self._forward_stack.pop()
+        self._push_capped(self._back_stack, self.path)
+        self.change_directory(target, _from_history=True)
+        return True
 
     def toggle_selection(self) -> None:
         """Toggle selection of the current entry and advance cursor."""
