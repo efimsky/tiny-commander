@@ -770,7 +770,12 @@ class App:
 
         curses.endwin()
         try:
-            subprocess.run(shlex.split(tool) + [str(file_path)])
+            completed = subprocess.run(shlex.split(tool) + [str(file_path)])
+            if completed.returncode != 0:
+                return ViewResult(
+                    success=False,
+                    error=f'{tool_name.capitalize()} exited with code {completed.returncode}'
+                )
             return ViewResult(success=True)
         except FileNotFoundError:
             return ViewResult(success=False, error=f'{tool_name.capitalize()} not found: {tool}')
@@ -1174,8 +1179,11 @@ class App:
         # Suspend curses and run command in terminal
         curses.endwin()
         try:
-            # Run command in active panel's directory (shell=True for pipes, redirects, etc.)
-            subprocess.run(command, shell=True, cwd=str(self.active_panel.path))
+            # Intentional: `command` is user-typed input from the command bar;
+            # shell=True is what enables pipes, redirects, globs, env-var expansion.
+            completed = subprocess.run(command, shell=True, cwd=str(self.active_panel.path))  # noqa: S602  # nosemgrep: subprocess-shell-true
+            if completed.returncode != 0:
+                print(f'\n[Exit {completed.returncode}]', end='', flush=True)
         except (OSError, subprocess.SubprocessError) as e:
             print(f'\nError: {e}')
         # Wait for user to press a key
@@ -1220,7 +1228,9 @@ class App:
         """
         curses.endwin()
         try:
-            subprocess.run([str(file_path)], cwd=str(file_path.parent))
+            completed = subprocess.run([str(file_path)], cwd=str(file_path.parent))
+            if completed.returncode != 0:
+                print(f'\n[Exit {completed.returncode}]', end='', flush=True)
         except (OSError, subprocess.SubprocessError) as e:
             print(f'\nError: {e}')
         print('\n[Press any key to continue]', end='', flush=True)
