@@ -101,9 +101,8 @@ def render_panel_entries(
 class Panel:
     """A panel displaying directory contents."""
 
-    # Cap on the breadcrumb cache (parent path -> remembered child name).
+    # Maximum number of entries in navigation history
     _HISTORY_LIMIT = 50
-    # Independent cap on the Alt+Left/Right directory back & forward stacks.
     _BACK_FORWARD_LIMIT = 50
 
     def __init__(self, path: str, width: int = 40, height: int = 20) -> None:
@@ -135,8 +134,7 @@ class Panel:
         # Navigation history: maps parent path -> child directory name
         # Used to remember position when navigating up via '..'
         self._navigation_history: dict[Path, str] = {}
-        # Back/forward stacks for Alt+Left / Alt+Right history navigation.
-        # Each entry is a previously visited Path; oldest evicted at limit.
+        # Back/forward stacks for Alt+Left / Alt+Right history navigation
         self._back_stack: list[Path] = []
         self._forward_stack: list[Path] = []
         # Cached directory sizes: maps full path -> size in bytes
@@ -651,12 +649,10 @@ class Panel:
 
         Args:
             new_path: The new directory path.
-            external: If True, treat as a fresh-start jump: clear breadcrumb
-                cache and the Alt+Left/Right back/forward stacks (for
-                command-line nav or other external triggers).
-            _from_history: Internal flag set by navigate_back/navigate_forward
-                so the back/forward stacks aren't mutated by the history step
-                itself.
+            external: If True, clear navigation history and back/forward stacks
+                (for command-line nav or other external triggers).
+            _from_history: Internal flag for navigate_back/navigate_forward to
+                avoid mutating back/forward stacks during a history step.
         """
         if external:
             self._navigation_history.clear()
@@ -664,9 +660,6 @@ class Panel:
             self._forward_stack.clear()
 
         resolved = new_path.resolve()
-        # On a manual (non-history, non-external) directory change, record
-        # where we came from for Alt+Left and discard any pending forward
-        # history. External jumps wiped both stacks above and start fresh.
         if not _from_history and not external and resolved != self.path:
             self._back_stack.append(self.path)
             if len(self._back_stack) > self._BACK_FORWARD_LIMIT:
@@ -685,33 +678,26 @@ class Panel:
         self.cursor = restored_index if restored_index is not None else 0
         self._adjust_scroll()
 
-    def navigate_back(self) -> bool:
-        """Navigate to the previous directory in the back stack.
+    def _push_capped(self, stack: list[Path], path: Path) -> None:
+        stack.append(path)
+        if len(stack) > self._BACK_FORWARD_LIMIT:
+            stack.pop(0)
 
-        Returns:
-            True if a back step was taken, False if the back stack was empty.
-        """
+    def navigate_back(self) -> bool:
+        """Step to the previous directory; returns False if back stack is empty."""
         if not self._back_stack:
             return False
         target = self._back_stack.pop()
-        self._forward_stack.append(self.path)
-        if len(self._forward_stack) > self._BACK_FORWARD_LIMIT:
-            self._forward_stack.pop(0)
+        self._push_capped(self._forward_stack, self.path)
         self.change_directory(target, _from_history=True)
         return True
 
     def navigate_forward(self) -> bool:
-        """Navigate to the next directory in the forward stack.
-
-        Returns:
-            True if a forward step was taken, False if the forward stack was empty.
-        """
+        """Step to the next directory; returns False if forward stack is empty."""
         if not self._forward_stack:
             return False
         target = self._forward_stack.pop()
-        self._back_stack.append(self.path)
-        if len(self._back_stack) > self._BACK_FORWARD_LIMIT:
-            self._back_stack.pop(0)
+        self._push_capped(self._back_stack, self.path)
         self.change_directory(target, _from_history=True)
         return True
 

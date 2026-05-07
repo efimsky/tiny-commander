@@ -438,11 +438,9 @@ class App:
                     return Action.OPEN_IN_FINDER
                 return Action.NONE
             elif next_key == curses.KEY_LEFT:
-                # Alt+Left - back through directory history
                 self.active_panel.navigate_back()
                 self.command_line.set_path(str(self.active_panel.path))
             elif next_key == curses.KEY_RIGHT:
-                # Alt+Right - forward through directory history
                 self.active_panel.navigate_forward()
                 self.command_line.set_path(str(self.active_panel.path))
             elif next_key != -1:
