@@ -389,6 +389,24 @@ def chown_files(
     return ChownResult(success=True, changed_files=changed)
 
 
+def _is_dest_inside_source(source_path: Path, dest_path: Path) -> bool:
+    """True when source is a directory and dest_path equals it or lies within it.
+
+    Prevents copy/move from recursing forever when the user picks a destination
+    that happens to be a child of the source (e.g. moving /a into /a/sub).
+    """
+    if not source_path.is_dir() or source_path.is_symlink():
+        return False
+    try:
+        resolved_source = source_path.resolve()
+        resolved_dest = dest_path.resolve()
+    except OSError:
+        return False
+    if resolved_dest == resolved_source:
+        return True
+    return resolved_source in resolved_dest.parents
+
+
 def _copy_item(source_path: Path, dest_path: Path) -> None:
     """Copy a single file or directory with proper handling for different types.
 
@@ -456,6 +474,11 @@ def _process_file_operation(
         try:
             if not source_path.exists() and not source_path.is_symlink():
                 errors.append(f'{filename}: File not found')
+                continue
+
+            if _is_dest_inside_source(source_path, dest_path):
+                verb = 'copy' if result_attr == 'copied_files' else 'move'
+                errors.append(f'{filename}: Cannot {verb} directory into itself or a subdirectory')
                 continue
 
             operation(source_path, dest_path)
@@ -748,6 +771,12 @@ def _process_files_with_overwrite(
         try:
             if not source_path.exists() and not source_path.is_symlink():
                 errors.append(f'{filename}: File not found')
+                continue
+
+            if _is_dest_inside_source(source_path, dest_path):
+                errors.append(
+                    f'{filename}: Cannot {operation_name} directory into itself or a subdirectory'
+                )
                 continue
 
             # Check for conflict

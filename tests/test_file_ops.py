@@ -244,6 +244,43 @@ class TestCopyErrorHandling(unittest.TestCase):
                 result = copy_files([], source_dir, dest_dir)
                 self.assertTrue(result.success)
 
+    def test_copy_directory_into_own_subdirectory_refused(self):
+        """Copying a directory into its own subdirectory should be refused, not recurse forever."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source_dir = Path(tmpdir)
+            sub = source_dir / 'sub'
+            sub.mkdir()
+            (sub / 'file.txt').write_text('hello')
+
+            result = copy_files(['sub'], str(source_dir), str(sub))
+
+            self.assertFalse(result.success)
+            self.assertTrue(
+                'into itself' in result.error.lower() or 'subdirector' in result.error.lower(),
+                f'Expected refusal message, got: {result.error!r}'
+            )
+            self.assertFalse((sub / 'sub').exists(), 'No recursive copy should have occurred')
+
+    def test_move_directory_into_own_subdirectory_refused(self):
+        """Moving a directory into its own subdirectory should be refused."""
+        from tnc.file_ops import move_files
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source_dir = Path(tmpdir)
+            sub = source_dir / 'sub'
+            sub.mkdir()
+            (sub / 'file.txt').write_text('hello')
+
+            result = move_files(['sub'], str(source_dir), str(sub))
+
+            self.assertFalse(result.success)
+            self.assertTrue(
+                'into itself' in result.error.lower() or 'subdirector' in result.error.lower(),
+                f'Expected refusal message, got: {result.error!r}'
+            )
+            # Source must still exist - move was refused before any change
+            self.assertTrue(sub.exists())
+            self.assertTrue((sub / 'file.txt').exists())
+
 
 class TestCopyResult(unittest.TestCase):
     """Test CopyResult dataclass."""
