@@ -77,8 +77,11 @@ class Config:
                         # Preserve unknown keys
                         config._unknown_keys[key] = value
 
-        except (FileNotFoundError, PermissionError):
-            # Return default config if file doesn't exist or can't be read
+        except (OSError, UnicodeDecodeError):
+            # Anything from a missing file to a directory at the path to
+            # non-UTF-8 bytes inside falls back to defaults rather than
+            # crashing startup. The user can still launch the app and fix
+            # the file from inside it.
             pass
 
         return config
