@@ -267,5 +267,30 @@ class TestSafeAddstr(unittest.TestCase):
         win.addstr.assert_called_once_with(0, 0, '日本語テスト', 0)
 
 
+class TestFormatMtimeOverflow(unittest.TestCase):
+    """format_mtime must not crash on absurd timestamps (issue #39)."""
+
+    def test_overflow_returns_placeholder(self):
+        """Timestamps too large for the C library must return a placeholder, not crash."""
+        from tnc.utils import format_mtime
+        result = format_mtime(10**18)
+        self.assertEqual(len(result), 12)
+
+    def test_negative_extreme_returns_placeholder(self):
+        """Heavily negative timestamps must also be handled."""
+        from tnc.utils import format_mtime
+        result = format_mtime(-10**18)
+        self.assertEqual(len(result), 12)
+
+    def test_normal_timestamp_returns_formatted(self):
+        """A normal timestamp still returns the standard format."""
+        import time
+        from tnc.utils import format_mtime
+        now = time.time()
+        result = format_mtime(now)
+        self.assertEqual(len(result), 12)
+        self.assertNotIn('?', result)
+
+
 if __name__ == '__main__':
     unittest.main()

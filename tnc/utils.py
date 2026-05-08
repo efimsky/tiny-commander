@@ -115,7 +115,13 @@ def format_mtime(timestamp: float) -> str:
     # 6-month threshold matches ls -l behavior
     six_months_seconds = 180 * 24 * 60 * 60
 
-    local_time = time.localtime(timestamp)
+    try:
+        local_time = time.localtime(timestamp)
+    except (OverflowError, OSError, ValueError):
+        # Corrupt or absurd mtime (pre-1970, year > 9999) — render a
+        # placeholder of the same width as a normal timestamp so the
+        # panel doesn't shift columns.
+        return '????????????'  # 12 chars
     age = now - timestamp
 
     # Recent file: "MMM DD HH:MM", Old/future file: "MMM DD  YYYY"
