@@ -128,7 +128,8 @@ class TestDeleteConfirmationPromptFormat(unittest.TestCase):
     """Test delete confirmation shows [Y/n] format."""
 
     def test_single_file_prompt_format(self):
-        """Single file prompt should show [Y/n] format."""
+        """Single-file delete prompt renders the Yes/No button bar (issue #16
+        replaced the inline `[Y/n]` hint with explicit ButtonBar buttons)."""
         with tempfile.TemporaryDirectory() as tmpdir:
             test_file = Path(tmpdir) / 'myfile.txt'
             test_file.write_text('content')
@@ -146,14 +147,14 @@ class TestDeleteConfirmationPromptFormat(unittest.TestCase):
 
                 app._prompt_delete()
 
-                # Check addstr was called with [Y/n] format somewhere in the dialog
                 calls = stdscr.addstr.call_args_list
                 all_text = ' '.join(str(c) for c in calls)
                 self.assertIn('Delete', all_text, "Should have a Delete prompt")
-                self.assertIn('[Y/n]', all_text, "Dialog should show [Y/n] format")
+                self.assertIn('[ Yes ]', all_text, "Dialog should render the Yes button")
+                self.assertIn('[ No ]', all_text, "Dialog should render the No button")
 
     def test_multiple_files_prompt_format(self):
-        """Multiple files prompt should show [Y/n] format."""
+        """Multi-file delete prompt also shows the Yes/No button bar."""
         with tempfile.TemporaryDirectory() as tmpdir:
             Path(tmpdir, 'file1.txt').write_text('1')
             Path(tmpdir, 'file2.txt').write_text('2')
@@ -172,11 +173,11 @@ class TestDeleteConfirmationPromptFormat(unittest.TestCase):
 
                 app._prompt_delete()
 
-                # Check addstr was called with [Y/n] format somewhere in the dialog
                 calls = stdscr.addstr.call_args_list
                 all_text = ' '.join(str(c) for c in calls)
                 self.assertIn('Delete', all_text, "Should have a Delete prompt")
-                self.assertIn('[Y/n]', all_text, "Dialog should show [Y/n] format")
+                self.assertIn('[ Yes ]', all_text, "Dialog should render the Yes button")
+                self.assertIn('[ No ]', all_text, "Dialog should render the No button")
 
 
 if __name__ == '__main__':
