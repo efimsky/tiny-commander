@@ -426,5 +426,71 @@ class TestFunctionBarLabelCentering(unittest.TestCase):
         self.assertEqual(bar.action_at_point(63), Action.DELETE)
 
 
+class TestFunctionBarEdgeAnchoring(unittest.TestCase):
+    """Issue #80: the first button anchors to col 0 (no left padding)
+    and the last button anchors to its cell's right edge (no trailing
+    pad inside the cell). Middle buttons keep #18's centering."""
+
+    def _capture_addstr_calls(self, bar: FunctionBar, width: int):
+        calls: list[tuple[int, str]] = []
+        win = mock.MagicMock()
+
+        def fake_addstr(_y, x, text, *_args, **_kwargs):
+            calls.append((x, text))
+
+        win.addstr.side_effect = fake_addstr
+        bar.render(win, y=0, width=width)
+        return [(x, t) for (x, t) in calls if not (x == 0 and len(t) == width)]
+
+    def test_first_button_renders_at_col_zero_at_width_145(self):
+        """At width=145 (cell_width=14), F1 (' F1Help', 7 chars) used to
+        render centered at col 3 with cols 0-2 cyan-padding. Now it
+        anchors to col 0 — no leading cyan strip before F1."""
+        bar = FunctionBar()
+        calls = self._capture_addstr_calls(bar, width=145)
+        f1_calls = [(x, t) for (x, t) in calls if t == ' F1']
+        self.assertEqual(len(f1_calls), 1, f1_calls)
+        x, _ = f1_calls[0]
+        self.assertEqual(x, 0, f'F1 should anchor to col 0, got x={x}')
+
+    def test_first_button_renders_at_col_zero_at_width_80(self):
+        bar = FunctionBar()
+        calls = self._capture_addstr_calls(bar, width=80)
+        f1_calls = [(x, t) for (x, t) in calls if t == ' F1']
+        self.assertEqual(len(f1_calls), 1)
+        self.assertEqual(f1_calls[0][0], 0)
+
+    def test_last_button_anchors_to_cell_right_edge_at_width_145(self):
+        """At width=145, cell_width=14, F10 cell [126, 140). Label
+        ' F10Quit' (8 chars). Right-anchored: text_start = 140 - 8 = 132."""
+        bar = FunctionBar()
+        calls = self._capture_addstr_calls(bar, width=145)
+        f10_calls = [(x, t) for (x, t) in calls if t == ' F10']
+        self.assertEqual(len(f10_calls), 1, f10_calls)
+        x, _ = f10_calls[0]
+        self.assertEqual(x, 132, f'F10 should right-anchor at col 132, got x={x}')
+
+    def test_middle_buttons_remain_centered_at_width_145(self):
+        """F2..F9 keep issue #18's centering; this regression-locks that
+        the edge-anchor change doesn't accidentally affect middle buttons."""
+        bar = FunctionBar()
+        calls = self._capture_addstr_calls(bar, width=145)
+        # cell_width = 14. F5 (' F5Copy', 7 chars) at index 4:
+        # cell [56, 70). Centered: 56 + (14-7)//2 = 56 + 3 = 59.
+        f5_calls = [(x, t) for (x, t) in calls if t == ' F5']
+        self.assertEqual(len(f5_calls), 1)
+        self.assertEqual(f5_calls[0][0], 59)
+
+    def test_button_positions_unchanged_by_edge_anchoring(self):
+        """Edge anchoring is a render-only change — the click hit-region
+        table (button_positions) is the same as before."""
+        bar = FunctionBar()
+        win = mock.MagicMock()
+        bar.render(win, y=0, width=80)
+        expected_starts = [i * 8 for i in range(10)]
+        actual_starts = [s for s, _, _ in bar.button_positions]
+        self.assertEqual(actual_starts, expected_starts)
+
+
 if __name__ == '__main__':
     unittest.main()

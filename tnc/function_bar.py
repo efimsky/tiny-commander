@@ -167,15 +167,27 @@ class FunctionBar:
             key_text = f' {key}'
             label_text = label
 
-            # Center the label within its cell. Issue #18: left-aligned
-            # labels left trailing cyan padding sitting right next to the
-            # next button's label, so a click in that gap landed in the
-            # previous cell and triggered the wrong action. Centering puts
-            # the visible text in the middle of its clickable region. The
-            # max(0, ...) clamp keeps narrow terminals (label wider than
-            # cell) rendering at start_x.
+            # Position the label within its cell:
+            #   - First button: anchored to col 0 (no leading cyan strip).
+            #   - Last button:  anchored to the right edge of its cell
+            #                   (no trailing cyan strip after the label).
+            #   - Middle buttons: centered (issue #18 — a click just before
+            #                     the visible label still resolves to that
+            #                     button instead of the previous cell's
+            #                     trailing pad).
+            # Issue #80: the centering created visible cyan strips at the
+            # left and right ends of the bar that looked like cut-off
+            # content. End-anchoring removes them while preserving the
+            # click-region invariants (button_positions is unchanged).
+            # The max(0, ...) clamp keeps narrow terminals (label wider
+            # than cell) rendering at start_x for middle buttons.
             text_len = len(key_text) + len(label_text)
-            text_start = start_x + max(0, (cell_width - text_len) // 2)
+            if i == 0:
+                text_start = start_x
+            elif i == len(buttons) - 1:
+                text_start = max(start_x, end_x - text_len)
+            else:
+                text_start = start_x + max(0, (cell_width - text_len) // 2)
 
             # Check if this button should be highlighted (visual feedback)
             if self.highlight_button == key:
