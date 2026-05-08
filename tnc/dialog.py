@@ -6,6 +6,7 @@ from typing import Any, Protocol
 
 from tnc.colors import PAIR_DIALOG, PAIR_DIALOG_TITLE, get_attr
 from tnc.file_ops import OverwriteChoice, OverwriteHandler
+from tnc.modal import Button, ButtonBar, Modal
 from tnc.utils import format_size, safe_addstr
 
 
@@ -210,13 +211,78 @@ def draw_modal(
     return (y, x)
 
 
+class ConfirmModal(Modal):
+    """Y/N confirmation dialog backed by the shared Modal shell.
+
+    Click on either button activates it; arrow keys cycle focus; Enter
+    activates the focused button. The original y/n/Esc/Enter shortcuts
+    are preserved for muscle memory.
+    """
+
+    def __init__(
+        self, title: str, message: str, default_yes: bool = True
+    ) -> None:
+        super().__init__()
+        self.title = title
+        self.message = message
+        self.default_yes = default_yes
+        self.button_bar = ButtonBar(
+            buttons=[
+                Button(label='Yes', shortcut='y', value=True),
+                Button(label='No', shortcut='n', value=False),
+            ],
+            focused=0 if default_yes else 1,
+        )
+        self._width = max(len(message) + 6, len(title) + 6, 30)
+
+    def render(self, win: Any) -> None:
+        # Reserve one body line for the button bar (rendered on top).
+        body = [self.message, '', '']
+        box_y, box_x = draw_modal(win, self.title, body, width=self._width)
+        btn_y = box_y + 3 + len(body) - 1
+        self.button_bar.render(
+            win, y=btn_y, x_start=box_x + 2, total_width=self._width - 4
+        )
+        win.refresh()
+
+    def handle_key(self, key: int) -> None:
+        # Letter shortcuts (case-insensitive).
+        if key in (ord('y'), ord('Y')):
+            self.set_result(True)
+            return
+        if key in (ord('n'), ord('N'), 27):  # 27 = Escape
+            self.set_result(False)
+            return
+        # Arrow / Tab → cycle focus.
+        if key in (curses.KEY_LEFT, curses.KEY_UP):
+            self.button_bar.move_focus(-1)
+            return
+        if key in (curses.KEY_RIGHT, curses.KEY_DOWN, ord('\t')):
+            self.button_bar.move_focus(1)
+            return
+        # Enter activates the focused button.
+        if key in (ord('\n'), ord('\r'), curses.KEY_ENTER):
+            self.set_result(self.button_bar.activate())
+
+    def handle_click(self, x: int, y: int, button_state: int) -> None:
+        if not (button_state & curses.BUTTON1_CLICKED):
+            return
+        value = self.button_bar.hit_test(x, y)
+        if value is not None:
+            self.set_result(value)
+
+
 def confirm_dialog(
     win: Any,
     title: str,
     message: str,
     default_yes: bool = True
 ) -> bool:
-    """Show a simple y/n confirmation dialog.
+    """Show a simple y/n confirmation dialog (mouse + keyboard).
+
+    Backed by :class:`ConfirmModal`. Mouse click on either button activates
+    it; arrow keys / Tab cycle focus; Enter activates the focused button;
+    y/n/Esc keep their original meaning for muscle memory.
 
     Args:
         win: Curses window to draw on.
@@ -227,23 +293,7 @@ def confirm_dialog(
     Returns:
         True if user confirmed, False otherwise.
     """
-    # Show [Y/n] or [y/N] based on default
-    if default_yes:
-        hint = '[Y/n]'
-    else:
-        hint = '[y/N]'
-
-    lines = [message, '', f'(y)es  (n)o  {hint}']
-    draw_modal(win, title, lines, width=max(len(message) + 6, len(title) + 6, 30))
-
-    while True:
-        key = win.getch()
-        if key in (ord('y'), ord('Y')):
-            return True
-        elif key in (ord('n'), ord('N'), 27):  # 27 = Escape
-            return False
-        elif key in (ord('\n'), ord('\r'), curses.KEY_ENTER):
-            return default_yes
+    return ConfirmModal(title, message, default_yes=default_yes).show(win)
 
 
 def overwrite_dialog(
