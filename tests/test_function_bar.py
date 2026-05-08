@@ -155,9 +155,9 @@ class TestFunctionBar(unittest.TestCase):
 
         bar.render(mock_win, y=24, width=80)
 
-        # With 8 keys and width=80, cell_width = 80 // 8 = 10
-        cell_width = 80 // 8
-        expected_starts = [i * cell_width for i in range(8)]
+        # Issue #78: bar now has 10 buttons (F1-F10). cell_width = 80 // 10 = 8.
+        cell_width = 80 // 10
+        expected_starts = [i * cell_width for i in range(10)]
         actual_starts = [start_x for start_x, _, _ in bar.button_positions]
         self.assertEqual(actual_starts, expected_starts)
 
@@ -169,8 +169,8 @@ class TestFunctionBar(unittest.TestCase):
 
         bar.render(mock_win, y=24, width=80)
 
-        cell_width = 80 // 8
-        expected_starts = [i * cell_width for i in range(8)]
+        cell_width = 80 // 10
+        expected_starts = [i * cell_width for i in range(10)]
         actual_starts = [start_x for start_x, _, _ in bar.button_positions]
         self.assertEqual(actual_starts, expected_starts)
 
