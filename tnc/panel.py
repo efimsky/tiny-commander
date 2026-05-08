@@ -138,9 +138,13 @@ class Panel:
         # Back/forward stacks for Alt+Left / Alt+Right history navigation
         self._back_stack: list[Path] = []
         self._forward_stack: list[Path] = []
-        # Cached directory sizes: maps full path -> size in bytes
-        # Persists for the entire session (not cleared on directory change)
-        self._dir_size_cache: dict[Path, int] = {}
+        # Cached directory sizes: maps full path -> (size_in_bytes, mtime).
+        # Persists for the entire session (not cleared on directory change),
+        # but each cache hit revalidates against the directory's current
+        # mtime so F5/F6/F8 against a measured dir don't leave stale numbers
+        # on screen (issue #46). External shell-driven changes are also
+        # caught via the same mtime check.
+        self._dir_size_cache: dict[Path, tuple[int, float]] = {}
         # Render position tracking for mouse hit detection
         self.render_x: int = 0
         self.render_y: int = 0
@@ -871,6 +875,9 @@ class Panel:
     def measure_dir_size(self, name: str) -> int:
         """Calculate and cache the size of a directory.
 
+        The cache stores (size, mtime) so subsequent reads can detect when
+        the directory has been modified and invalidate themselves.
+
         Args:
             name: Name of the directory to measure.
 
@@ -880,20 +887,37 @@ class Panel:
         dir_path = (self.path / name).resolve()
         size = calculate_dir_size(dir_path)
         if size >= 0:
-            self._dir_size_cache[dir_path] = size
+            try:
+                mtime = dir_path.stat().st_mtime
+            except OSError:
+                # Don't cache an entry we can't validate against later.
+                return size
+            self._dir_size_cache[dir_path] = (size, mtime)
         return size
 
     def get_cached_dir_size(self, name: str) -> int | None:
-        """Get cached directory size if available.
+        """Get cached directory size if still valid.
 
-        Args:
-            name: Name of the directory.
-
-        Returns:
-            Size in bytes if cached, None otherwise.
+        Revalidates by comparing the directory's current mtime to the
+        mtime captured at measurement time. Mismatch (or stat failure)
+        drops the entry and returns None so the caller treats the dir as
+        unmeasured. This catches F5/F6/F8 against the measured dir as
+        well as external mutations (issue #46).
         """
         dir_path = (self.path / name).resolve()
-        return self._dir_size_cache.get(dir_path)
+        entry = self._dir_size_cache.get(dir_path)
+        if entry is None:
+            return None
+        size, cached_mtime = entry
+        try:
+            current_mtime = dir_path.stat().st_mtime
+        except OSError:
+            self._dir_size_cache.pop(dir_path, None)
+            return None
+        if current_mtime != cached_mtime:
+            self._dir_size_cache.pop(dir_path, None)
+            return None
+        return size
 
     def delete_selected(self) -> DeleteResult:
         """Delete selected files or current file if nothing selected.
