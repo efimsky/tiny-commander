@@ -391,6 +391,30 @@ class TestRenameFile(unittest.TestCase):
             self.assertFalse(result.success)
             self.assertIn('separator', result.error.lower())
 
+    def test_rename_file_not_found_yields_clear_message(self):
+        """A TOCTOU race where source disappears mid-rename should produce a clear message (issue #45)."""
+        from unittest import mock
+        from tnc.file_ops import rename_file
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, 'file.txt').touch()
+            with mock.patch.object(Path, 'rename', side_effect=FileNotFoundError(2, 'No such file')):
+                result = rename_file(tmpdir, 'file.txt', 'newname.txt')
+            self.assertFalse(result.success)
+            self.assertIn('not found', result.error.lower())
+
+    def test_rename_destination_appears_yields_clear_message(self):
+        """If the destination appears between the check and rename, say so explicitly."""
+        from unittest import mock
+        from tnc.file_ops import rename_file
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, 'file.txt').touch()
+            with mock.patch.object(Path, 'rename', side_effect=FileExistsError(17, 'File exists')):
+                result = rename_file(tmpdir, 'file.txt', 'newname.txt')
+            self.assertFalse(result.success)
+            self.assertIn('exists', result.error.lower())
+
     def test_case_only_rename_allowed_when_paths_are_same_inode(self):
         """On case-insensitive FSes (APFS, NTFS), Foo.txt and foo.txt resolve to the same inode.
 

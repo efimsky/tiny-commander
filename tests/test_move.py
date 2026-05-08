@@ -248,6 +248,34 @@ class TestMoveErrorDisplay(unittest.TestCase):
                 self.assertIn('file.txt: Permission denied', call_kwargs['errors'])
 
 
+class TestMoveSameFileError(unittest.TestCase):
+    """SameFileError must produce a clear message (issue #45)."""
+
+    def test_same_file_error_yields_clear_message(self):
+        """When source and destination resolve to the same file, the message says so."""
+        import shutil as _shutil
+        from tnc import file_ops
+
+        with tempfile.TemporaryDirectory() as source_dir:
+            with tempfile.TemporaryDirectory() as dest_dir:
+                Path(source_dir, 'file.txt').write_text('content')
+
+                # shutil.move detects identical paths and raises SameFileError
+                # (subclass of OSError). We want the user to see the cause,
+                # not a generic 'Permission denied'.
+                with mock.patch.object(
+                    file_ops.shutil, 'move',
+                    side_effect=_shutil.SameFileError("'a' and 'b' are the same file")
+                ):
+                    result = move_files(['file.txt'], source_dir, dest_dir)
+
+                self.assertFalse(result.success)
+                self.assertTrue(
+                    any('same file' in e.lower() for e in result.errors),
+                    f'Expected an error mentioning "same file", got: {result.errors!r}'
+                )
+
+
 class TestMoveSourceLeftover(unittest.TestCase):
     """Detect when shutil.move says success but the source still exists (issue #37)."""
 
