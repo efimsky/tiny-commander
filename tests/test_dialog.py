@@ -745,6 +745,81 @@ class TestMockDialogProvider(unittest.TestCase):
         self.assertEqual(result, 'nano')
 
 
+class TestSelectionDialogMouse(unittest.TestCase):
+    """Issue #16: SelectionDialog gains arrow-key + click navigation while
+    keeping the digit shortcuts and Esc behaviour."""
+
+    def _setup(self, options=None, allow_custom=False):
+        from tnc.dialog import SelectionDialog
+        d = SelectionDialog(
+            title='Pick',
+            options=options or ['nano', 'vim', 'emacs'],
+            allow_custom=allow_custom,
+        )
+        win = MagicMock()
+        win.getmaxyx.return_value = (24, 80)
+        return d, win
+
+    @patch('tnc.dialog.get_attr', return_value=0)
+    def test_click_on_option_returns_that_option(self, _attr):
+        d, win = self._setup()
+        d.render(win)
+        # Click in the middle of the second option's row.
+        x_start, x_end, row_y, _ = d.option_positions[1]
+        midx = (x_start + x_end) // 2
+
+        win.getch.side_effect = [curses.KEY_MOUSE]
+        with patch(
+            'curses.getmouse',
+            return_value=(0, midx, row_y, 0, curses.BUTTON1_CLICKED),
+        ):
+            self.assertEqual(d.show(win), 'vim')
+
+    @patch('tnc.dialog.get_attr', return_value=0)
+    def test_arrow_down_then_enter_activates_focused(self, _attr):
+        d, win = self._setup()
+        # Initial focus = 0 (nano). Down-Down → emacs (index 2). Enter activates.
+        win.getch.side_effect = [
+            curses.KEY_DOWN, curses.KEY_DOWN, ord('\n'),
+        ]
+        self.assertEqual(d.show(win), 'emacs')
+
+    @patch('tnc.dialog.get_attr', return_value=0)
+    def test_arrow_up_wraps_to_last(self, _attr):
+        d, win = self._setup()
+        # From focus 0, Up wraps to last (index 2 = emacs). Enter activates.
+        win.getch.side_effect = [curses.KEY_UP, ord('\n')]
+        self.assertEqual(d.show(win), 'emacs')
+
+    @patch('tnc.dialog.get_attr', return_value=0)
+    def test_existing_digit_shortcut_returns_option(self, _attr):
+        """Regression test: digits still map directly to options."""
+        d, _ = self._setup()
+        self.assertEqual(d.handle_key(ord('2')), 'vim')
+
+    @patch('tnc.dialog.get_attr', return_value=0)
+    def test_click_on_custom_option_enters_custom_mode(self, _attr):
+        d, win = self._setup(allow_custom=True)
+        d.render(win)
+        # Find the custom row.
+        custom_entry = next(
+            e for e in d.option_positions if e[3] == 'custom'
+        )
+        x_start, x_end, row_y, _ = custom_entry
+        midx = (x_start + x_end) // 2
+
+        # Click → enter custom mode; Esc in custom mode exits to normal
+        # mode (does NOT cancel); a second Esc in normal mode cancels.
+        win.getch.side_effect = [curses.KEY_MOUSE, 27, 27]
+        with patch(
+            'curses.getmouse',
+            return_value=(0, midx, row_y, 0, curses.BUTTON1_CLICKED),
+        ):
+            self.assertIsNone(d.show(win))
+        # Loop ran: click, Esc-leave-custom, Esc-cancel = 3 getch calls.
+        self.assertEqual(win.getch.call_count, 3)
+
+
 class TestSummaryDialogMouse(unittest.TestCase):
     """Issue #16: SummaryModal click-on-message-row dismisses; clicks
     elsewhere are ignored; any key still dismisses."""

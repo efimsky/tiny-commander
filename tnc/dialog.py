@@ -739,16 +739,23 @@ class CursesDialogProvider:
         return input_dialog(self.win, title, prompt, default_value)
 
 
-class SelectionDialog:
+class SelectionDialog(Modal):
     """A modal selection dialog with numbered options.
 
     Displays a centered, bordered dialog box with a title and
     numbered options. Optionally includes a Custom option for text input.
 
+    Issue #16: subclasses :class:`Modal` so it inherits mouse routing.
+    Up/Down arrows move focus across options; Enter activates focused;
+    digit shortcuts (1-9) and Esc behaviour are preserved. Click on an
+    option activates it directly.
+
     Attributes:
         title: Dialog title displayed in top border.
         options: List of option strings.
         allow_custom: Whether to show Custom option.
+        focused: Index of the currently focused option (0-indexed across
+            real options + Custom slot if enabled).
         in_custom_input_mode: Whether currently in text input mode.
         custom_text: Text entered in custom mode.
     """
@@ -768,11 +775,15 @@ class SelectionDialog:
             options: List of options to display.
             allow_custom: If True, add Custom option for text input.
         """
+        super().__init__()
         self.title = title
         self.options = options
         self.allow_custom = allow_custom
         self.in_custom_input_mode = False
         self.custom_text = ''
+        self.focused = 0
+        # Each entry: (x_start, x_end, y, option_index_or_'custom')
+        self.option_positions: list[tuple[int, int, int, Any]] = []
 
     def get_dimensions(self) -> tuple[int, int]:
         """Calculate dialog dimensions based on content.
@@ -802,31 +813,61 @@ class SelectionDialog:
 
         return width, height
 
+    def _total_focusable(self) -> int:
+        """Count of focusable rows (real options + Custom if enabled)."""
+        return len(self.options) + (1 if self.allow_custom else 0)
+
     def handle_key(self, key: int) -> str | None:
-        """Handle a keypress and return result.
+        """Handle a keypress.
+
+        Returns the selected string for direct callers (back-compat with
+        existing tests). Internally also calls :meth:`Modal.set_result` so
+        the :meth:`Modal.show` loop terminates correctly.
 
         Args:
             key: Key code from curses.
 
         Returns:
-            Selected option string, or None if not handled/cancelled.
+            Selected option string, or None if not handled / cancelled.
         """
         if self.in_custom_input_mode:
-            return self._handle_custom_input_key(key)
+            result = self._handle_custom_input_key(key)
+            if result is not None:
+                self.set_result(result)
+            return result
 
-        # Escape cancels
+        # Escape cancels.
         if key == 27:
+            self.set_result(None)
             return None
 
-        # Check for number key (supports 1-9 only)
+        # Up/Down move focus across the focusable rows.
+        if key == curses.KEY_UP:
+            total = self._total_focusable()
+            if total > 0:
+                self.focused = (self.focused - 1) % total
+            return None
+        if key == curses.KEY_DOWN:
+            total = self._total_focusable()
+            if total > 0:
+                self.focused = (self.focused + 1) % total
+            return None
+
+        # Enter activates the focused option (new in #16).
+        if key in (ord('\n'), ord('\r'), curses.KEY_ENTER):
+            return self._activate_focused()
+
+        # Digit shortcuts (1-9) — preserve existing behavior.
         try:
             char = chr(key)
             if char.isdigit():
                 num = int(char)
                 if 1 <= num <= len(self.options):
-                    return self.options[num - 1]
+                    result = self.options[num - 1]
+                    self.set_result(result)
+                    return result
                 elif self.allow_custom and num == len(self.options) + 1:
-                    # Enter custom input mode
+                    # Enter custom input mode (no set_result yet).
                     self.in_custom_input_mode = True
                     self.custom_text = ''
                     return None
@@ -834,6 +875,38 @@ class SelectionDialog:
             pass
 
         return None
+
+    def _activate_focused(self) -> str | None:
+        """Activate whatever the focus indicator is currently on."""
+        if self.focused < len(self.options):
+            result = self.options[self.focused]
+            self.set_result(result)
+            return result
+        # Focus on Custom slot.
+        if self.allow_custom and self.focused == len(self.options):
+            self.in_custom_input_mode = True
+            self.custom_text = ''
+            return None
+        return None
+
+    def handle_click(self, x: int, y: int, button_state: int) -> None:
+        """Click on a list item activates it (or enters Custom mode)."""
+        if not (button_state & curses.BUTTON1_CLICKED):
+            return
+        if self.in_custom_input_mode:
+            # No clickable widgets in custom-input mode (v1).
+            return
+        for x_start, x_end, row_y, target in self.option_positions:
+            if y == row_y and x_start <= x < x_end:
+                if target == 'custom':
+                    self.focused = len(self.options)
+                    self.in_custom_input_mode = True
+                    self.custom_text = ''
+                    return
+                # `target` is the 0-based option index.
+                self.focused = target
+                self.set_result(self.options[target])
+                return
 
     def _handle_custom_input_key(self, key: int) -> str | None:
         """Handle key in custom input mode.
@@ -905,6 +978,7 @@ class SelectionDialog:
     ) -> None:
         """Render the selection list mode."""
         frame = _render_dialog_frame(width, self.title)
+        self.option_positions.clear()
 
         # Top border
         safe_addstr(stdscr, start_y, start_x, frame['top'], dialog_attr)
@@ -917,18 +991,29 @@ class SelectionDialog:
         # Separator
         safe_addstr(stdscr, start_y + 2, start_x, frame['separator'], dialog_attr)
 
-        # Options
+        # Options. Highlight the focused row with A_REVERSE so keyboard
+        # arrow navigation has a visible cursor (issue #16).
         line_y = start_y + 3
         for i, opt in enumerate(self.options, 1):
             content = f'│  {i}. {opt}'.ljust(width - 1) + '│'
-            safe_addstr(stdscr, line_y, start_x, content, dialog_attr)
+            attr = dialog_attr | (curses.A_REVERSE if self.focused == i - 1 else 0)
+            safe_addstr(stdscr, line_y, start_x, content, attr)
+            self.option_positions.append(
+                (start_x + 1, start_x + width - 1, line_y, i - 1)
+            )
             line_y += 1
 
         # Custom option
         if self.allow_custom:
             num = len(self.options) + 1
             content = f'│  {num}. Custom...'.ljust(width - 1) + '│'
-            safe_addstr(stdscr, line_y, start_x, content, dialog_attr)
+            attr = dialog_attr | (
+                curses.A_REVERSE if self.focused == len(self.options) else 0
+            )
+            safe_addstr(stdscr, line_y, start_x, content, attr)
+            self.option_positions.append(
+                (start_x + 1, start_x + width - 1, line_y, 'custom')
+            )
             line_y += 1
 
         # Empty line
@@ -937,7 +1022,7 @@ class SelectionDialog:
 
         # Hint line
         max_num = len(self.options) + (1 if self.allow_custom else 0)
-        hint = f'Press 1-{max_num} or [Esc] to cancel'
+        hint = f'1-{max_num}, arrows + Enter, or click  [Esc] to cancel'
         safe_addstr(stdscr, line_y, start_x, frame['content_line'](hint), dialog_attr)
         line_y += 1
 
@@ -991,28 +1076,8 @@ class SelectionDialog:
 
         stdscr.refresh()
 
-    def show(self, stdscr: Any) -> str | None:
-        """Show the dialog and handle input until a choice is made.
-
-        Args:
-            stdscr: Curses window.
-
-        Returns:
-            Selected option string, or None if cancelled.
-        """
-        while True:
-            self.render(stdscr)
-            key = stdscr.getch()
-            result = self.handle_key(key)
-
-            # In selection mode, None from number keys means continue
-            # But None from Escape means cancel
-            if result is not None:
-                return result
-
-            # Check if we got Escape (key 27) outside custom mode
-            if not self.in_custom_input_mode and key == 27:
-                return None
+    # show() is inherited from Modal; the loop drives render → getch →
+    # handle_key / handle_click and terminates when set_result fires.
 
 
 # Permission bit names in grid order (3 rows x 3 cols)
