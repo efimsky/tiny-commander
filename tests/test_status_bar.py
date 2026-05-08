@@ -348,5 +348,32 @@ class TestStatusBarFormatting(unittest.TestCase):
         self.assertEqual(result, '1 of 1')
 
 
+class TestStatusBarDoesNotSwallowProgrammingErrors(unittest.TestCase):
+    """status_bar.render must not silently absorb AttributeError (issue #34)."""
+
+    def test_render_propagates_attribute_error_on_broken_panel(self):
+        """A panel missing required attributes should raise AttributeError, not pass silently.
+
+        The pre-fix bare 'except (IndexError, AttributeError): pass' justified
+        itself as a race-condition guard, but curses apps are single-threaded.
+        Swallowing these errors hides real regressions.
+        """
+        from tnc.status_bar import StatusBar
+
+        # Build a panel-shaped object that's missing 'cursor' entirely.
+        broken_panel = mock.MagicMock(spec=['entries', 'search_mode', 'search_text', 'path', 'selected'])
+        broken_panel.entries = ['x']
+        broken_panel.search_mode = False
+        broken_panel.search_text = ''
+        broken_panel.selected = []
+        broken_panel.path = mock.MagicMock()
+
+        mock_win = mock.MagicMock()
+        status_bar = StatusBar()
+
+        with self.assertRaises(AttributeError):
+            status_bar.render(mock_win, 22, 80, broken_panel)
+
+
 if __name__ == '__main__':
     unittest.main()
