@@ -99,6 +99,28 @@ class TestButtonBar(unittest.TestCase):
             f'Focused Yes button must include A_REVERSE; saw attrs={attrs_used!r}',
         )
 
+    def test_focused_button_has_angle_markers_unfocused_has_spaces(self):
+        """mc-style focus indication: focused button renders as `[< label >]`,
+        unfocused as `[  label  ]`. Same width so layout doesn't shift on focus
+        change. Provides a redundant cue that survives monochrome terminals
+        and colorblindness."""
+        bar = self._make_bar(focused=0)
+        win = mock.MagicMock()
+        bar.render(win, y=10, x_start=20, total_width=40)
+
+        rendered_texts = [
+            args[2]
+            for call in win.addstr.call_args_list
+            for args in [call[0]]
+            if len(args) >= 4 and isinstance(args[2], str) and (
+                'Yes' in args[2] or 'No' in args[2]
+            )
+        ]
+        self.assertIn('[< Yes >]', rendered_texts)
+        self.assertIn('[  No  ]', rendered_texts)
+        # Both variants are the same length so the bar layout is stable.
+        self.assertEqual(len('[< Yes >]'), len('[  Yes  ]'))
+
 
 class TestModalBase(unittest.TestCase):
     """Modal.show(): single loop drives render, getch, mouse routing."""

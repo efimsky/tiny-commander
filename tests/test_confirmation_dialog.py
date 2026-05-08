@@ -150,8 +150,14 @@ class TestDeleteConfirmationPromptFormat(unittest.TestCase):
                 calls = stdscr.addstr.call_args_list
                 all_text = ' '.join(str(c) for c in calls)
                 self.assertIn('Delete', all_text, "Should have a Delete prompt")
-                self.assertIn('[ Yes ]', all_text, "Dialog should render the Yes button")
-                self.assertIn('[ No ]', all_text, "Dialog should render the No button")
+                # Issue #16 focus markers: focused button is `[< Yes >]`,
+                # unfocused is `[  No  ]`. Both have a 'Yes' / 'No' label
+                # surrounded by brackets.
+                self.assertIn('Yes', all_text, "Dialog should render the Yes button")
+                self.assertIn('No', all_text, "Dialog should render the No button")
+                # Default-yes delete prompt → Yes is focused → angle markers.
+                self.assertIn('[< Yes >]', all_text,
+                              "Focused Yes button should have mc-style focus markers")
 
     def test_multiple_files_prompt_format(self):
         """Multi-file delete prompt also shows the Yes/No button bar."""
@@ -176,8 +182,10 @@ class TestDeleteConfirmationPromptFormat(unittest.TestCase):
                 calls = stdscr.addstr.call_args_list
                 all_text = ' '.join(str(c) for c in calls)
                 self.assertIn('Delete', all_text, "Should have a Delete prompt")
-                self.assertIn('[ Yes ]', all_text, "Dialog should render the Yes button")
-                self.assertIn('[ No ]', all_text, "Dialog should render the No button")
+                self.assertIn('Yes', all_text, "Dialog should render the Yes button")
+                self.assertIn('No', all_text, "Dialog should render the No button")
+                self.assertIn('[< Yes >]', all_text,
+                              "Focused Yes button should have mc-style focus markers")
 
 
 if __name__ == '__main__':
