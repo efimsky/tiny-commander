@@ -496,6 +496,69 @@ def show_summary(
     win.getch()
 
 
+class ErrorModal(Modal):
+    """Modal error dialog with mouse + keyboard dismiss.
+
+    Click on OK or press any key to dismiss. Esc also dismisses (cancel and
+    OK behave identically — there's nothing else to do). The "any key" path
+    preserves muscle memory and the dozens of existing tests that stub
+    ``getch.return_value = ord('q')``.
+    """
+
+    def __init__(
+        self,
+        title: str,
+        message: str,
+        details: list[str] | None = None,
+        max_details: int = 5,
+    ) -> None:
+        super().__init__()
+        self.title = title
+
+        lines = [message, '']
+        if details:
+            for error in details[:max_details]:
+                lines.append(f'  {error}')
+            remaining = len(details) - max_details
+            if remaining > 0:
+                lines.append(f'  ...and {remaining} more error(s)')
+        lines.append('')
+
+        self._body = lines
+        self.button_bar = ButtonBar(
+            buttons=[Button(label='OK', shortcut='', value=None)],
+            focused=0,
+        )
+
+        max_line_len = max(len(line) for line in lines + [self.title]) if lines else len(self.title)
+        self._width = max(len(self.title) + 6, max_line_len + 6, 40)
+
+    def render(self, win: Any) -> None:
+        body = self._body + ['']  # last line reserved for button bar
+        box_y, box_x = draw_modal(win, self.title, body, width=self._width)
+        btn_y = box_y + 3 + len(body) - 1
+        self.button_bar.render(
+            win, y=btn_y, x_start=box_x + 2, total_width=self._width - 4
+        )
+        win.refresh()
+
+    def handle_key(self, key: int) -> None:
+        # Any key dismisses — back-compat with the previous "press any key"
+        # contract. set_result(None) signals a clean dismiss.
+        self.set_result(None)
+
+    def handle_click(self, x: int, y: int, button_state: int) -> None:
+        # The OK button's value is None (there's no other meaningful return),
+        # so ButtonBar.hit_test can't tell "hit OK" from "missed". Walk the
+        # cached positions explicitly: in-bar click dismisses, outside ignores.
+        if not (button_state & curses.BUTTON1_CLICKED):
+            return
+        for x_start, x_end, btn_y, _value in self.button_bar.button_positions:
+            if y == btn_y and x_start <= x < x_end:
+                self.set_result(None)
+                return
+
+
 def show_error_dialog(
     win: Any,
     title: str,
@@ -503,11 +566,11 @@ def show_error_dialog(
     details: list[str] | None = None,
     max_details: int = 5
 ) -> None:
-    """Display a modal error dialog.
+    """Display a modal error dialog (mouse + keyboard).
 
     Shows an error message in a centered modal dialog, optionally with
-    additional detail lines (e.g., per-file errors). Waits for user to
-    press any key before returning.
+    additional detail lines (e.g., per-file errors). Click OK or press any
+    key to dismiss.
 
     Args:
         win: Curses window to draw on.
@@ -516,27 +579,7 @@ def show_error_dialog(
         details: Optional list of detailed error messages (e.g., per-file errors).
         max_details: Maximum number of detail lines to show before truncating.
     """
-    lines = [message, '']
-
-    if details:
-        # Show up to max_details errors
-        for error in details[:max_details]:
-            lines.append(f'  {error}')
-
-        # Show truncation message if there are more
-        remaining = len(details) - max_details
-        if remaining > 0:
-            lines.append(f'  ...and {remaining} more error(s)')
-
-    lines.append('')
-    lines.append('[Press any key]')
-
-    # Calculate width to fit content
-    max_line_len = max(len(line) for line in lines)
-    width = max(len(title) + 6, max_line_len + 6, 40)
-
-    draw_modal(win, title, lines, width=width)
-    win.getch()
+    ErrorModal(title, message, details=details, max_details=max_details).show(win)
 
 
 class CursesOverwriteHandler(OverwriteHandler):

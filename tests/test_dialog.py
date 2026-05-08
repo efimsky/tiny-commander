@@ -745,6 +745,58 @@ class TestMockDialogProvider(unittest.TestCase):
         self.assertEqual(result, 'nano')
 
 
+class TestErrorDialogMouse(unittest.TestCase):
+    """Issue #16: ErrorModal click on OK dismisses; outside clicks ignored;
+    any-key dismiss preserved (back-compat with `getch.return_value=q` tests)."""
+
+    @patch('tnc.dialog.get_attr', return_value=0)
+    def test_click_on_ok_dismisses(self, _attr):
+        from tnc.dialog import ErrorModal
+        modal = ErrorModal('Error', 'something failed')
+        win = MagicMock()
+        win.getmaxyx.return_value = (24, 80)
+
+        modal.render(win)
+        x_start, x_end, btn_y, _ = modal.button_bar.button_positions[0]
+        midx = (x_start + x_end) // 2
+        win.getch.side_effect = [curses.KEY_MOUSE]
+        with patch(
+            'curses.getmouse',
+            return_value=(0, midx, btn_y, 0, curses.BUTTON1_CLICKED),
+        ):
+            self.assertIsNone(modal.show(win))
+
+    @patch('tnc.dialog.get_attr', return_value=0)
+    def test_click_outside_modal_does_not_dismiss(self, _attr):
+        """Click at (0,0) — well outside the dialog — must keep the loop alive.
+        We follow it with a key press to terminate so the test can assert."""
+        from tnc.dialog import ErrorModal
+        modal = ErrorModal('Error', 'something failed')
+        win = MagicMock()
+        win.getmaxyx.return_value = (24, 80)
+
+        win.getch.side_effect = [curses.KEY_MOUSE, ord('q')]
+        with patch(
+            'curses.getmouse',
+            return_value=(0, 0, 0, 0, curses.BUTTON1_CLICKED),
+        ):
+            modal.show(win)
+        # Two getch calls: outside click ignored, then 'q' dismisses.
+        self.assertEqual(win.getch.call_count, 2)
+
+    @patch('tnc.dialog.get_attr', return_value=0)
+    def test_any_key_dismisses_back_compat(self, _attr):
+        """Existing tests stub `getch.return_value = ord('q')` etc. Preserve."""
+        from tnc.dialog import show_error_dialog
+        for ch in [ord('q'), ord('\n'), 27, ord('x')]:
+            with self.subTest(ch=ch):
+                win = MagicMock()
+                win.getmaxyx.return_value = (24, 80)
+                win.getch.return_value = ch
+                # Should return without raising.
+                show_error_dialog(win, 'Error', 'msg')
+
+
 class TestOverwriteDialogMouse(unittest.TestCase):
     """Issue #16: OverwriteModal must respond to mouse clicks and arrow keys
     while preserving y/n/a/s/o/Esc shortcuts."""
