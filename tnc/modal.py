@@ -52,12 +52,22 @@ class ButtonBar:
         # Each entry is (x_start, x_end, y, value); x range is half-open.
         self.button_positions: list[tuple[int, int, int, Any]] = []
 
-    def render(self, win: Any, y: int, x_start: int, total_width: int) -> None:
+    def render(
+        self,
+        win: Any,
+        y: int,
+        x_start: int,
+        total_width: int,
+        base_attr: int = 0,
+    ) -> None:
         """Paint the bar and record hit regions.
 
         Buttons are evenly spaced across ``total_width`` starting at
-        ``x_start``. The focused button is rendered with ``curses.A_REVERSE``;
-        others with ``curses.A_NORMAL``.
+        ``x_start``. The focused button is rendered with
+        ``base_attr | curses.A_REVERSE``; others with ``base_attr``. Pass
+        the surrounding dialog's color pair as ``base_attr`` so the
+        unfocused buttons blend with the dialog background and the
+        focused one stands out via inverse video on the same palette.
         """
         self.button_positions.clear()
         if not self.buttons:
@@ -70,7 +80,7 @@ class ButtonBar:
             # Center the bracketed label inside the slot.
             offset = max(0, (slot_width - len(text)) // 2)
             text_x = slot_x + offset
-            attr = curses.A_REVERSE if i == self.focused else curses.A_NORMAL
+            attr = base_attr | curses.A_REVERSE if i == self.focused else base_attr
             safe_addstr(win, y, text_x, text, attr)
 
             # Record click region as the visible bracket span.

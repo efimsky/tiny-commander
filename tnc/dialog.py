@@ -241,7 +241,8 @@ class ConfirmModal(Modal):
         box_y, box_x = draw_modal(win, self.title, body, width=self._width)
         btn_y = box_y + 3 + len(body) - 1
         self.button_bar.render(
-            win, y=btn_y, x_start=box_x + 2, total_width=self._width - 4
+            win, y=btn_y, x_start=box_x + 2, total_width=self._width - 4,
+            base_attr=get_attr(PAIR_DIALOG),
         )
         win.refresh()
 
@@ -349,7 +350,8 @@ class OverwriteModal(Modal):
         box_y, box_x = draw_modal(win, self.title, body, width=self._width)
         btn_y = box_y + 3 + len(body) - 1
         self.button_bar.render(
-            win, y=btn_y, x_start=box_x + 2, total_width=self._width - 4
+            win, y=btn_y, x_start=box_x + 2, total_width=self._width - 4,
+            base_attr=get_attr(PAIR_DIALOG),
         )
         win.refresh()
 
@@ -569,7 +571,8 @@ class ErrorModal(Modal):
         box_y, box_x = draw_modal(win, self.title, body, width=self._width)
         btn_y = box_y + 3 + len(body) - 1
         self.button_bar.render(
-            win, y=btn_y, x_start=box_x + 2, total_width=self._width - 4
+            win, y=btn_y, x_start=box_x + 2, total_width=self._width - 4,
+            base_attr=get_attr(PAIR_DIALOG),
         )
         win.refresh()
 
@@ -2206,7 +2209,8 @@ class InputDialog(Modal):
         # OK / Cancel button bar (replaces the old "[Enter] OK [Esc] Cancel"
         # static hint). Issue #16: clickable + arrow-focusable buttons.
         self.button_bar.render(
-            stdscr, y=footer_y + 1, x_start=x + 1, total_width=width - 2
+            stdscr, y=footer_y + 1, x_start=x + 1, total_width=width - 2,
+            base_attr=dialog_attr,
         )
 
         # Bottom border
