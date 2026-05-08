@@ -286,5 +286,32 @@ class TestChmodRecursivePostOrder(unittest.TestCase):
                     pass
 
 
+class TestPartialSuccessMessage(unittest.TestCase):
+    """The partial-success message helper composes a clear summary (issue #36)."""
+
+    def test_partial_message_mentions_both_counts(self):
+        """When some files succeeded and others failed, the message includes both counts."""
+        from tnc.app import format_partial_success_message
+        msg = format_partial_success_message(
+            'Chmod', total=10, succeeded=8,
+            errors=['a.txt: Permission denied', 'b.txt: Permission denied']
+        )
+        self.assertIn('Chmod', msg)
+        self.assertIn('8', msg)  # succeeded
+        self.assertIn('10', msg)  # total
+        # Both individual errors should be mentioned
+        self.assertIn('a.txt', msg)
+        self.assertIn('b.txt', msg)
+
+    def test_partial_message_when_all_failed(self):
+        """When nothing succeeded, the message says 0 succeeded."""
+        from tnc.app import format_partial_success_message
+        msg = format_partial_success_message(
+            'Chown', total=3, succeeded=0,
+            errors=['x: oops', 'y: oops', 'z: oops']
+        )
+        self.assertIn('0 of 3', msg)
+
+
 if __name__ == '__main__':
     unittest.main()

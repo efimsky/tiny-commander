@@ -143,6 +143,24 @@ class ViewResult:
     error: str = ''
 
 
+def format_partial_success_message(
+    operation: str,
+    total: int,
+    succeeded: int,
+    errors: list[str],
+) -> str:
+    """Build a user-facing message reporting partial success.
+
+    Used by chmod / chown prompts so the user can tell the operation was
+    only partially destructive instead of seeing an error string with no
+    indication that some files were already modified.
+    """
+    header = f'{operation} succeeded on {succeeded} of {total} files.'
+    if errors:
+        return header + '\n' + '\n'.join(errors)
+    return header
+
+
 class App:
     """Main application class managing the curses interface."""
 
@@ -1398,25 +1416,38 @@ class App:
 
         new_mode, recursive = result
 
-        # Apply changes
+        # Apply changes. Track per-target success counts so that a
+        # partial failure can be reported as such rather than a bare
+        # error string with no indication that some files were already
+        # changed (issue #36).
+        all_errors: list[str] = []
+        succeeded = 0
         if recursive and has_directory:
-            # Apply recursively to directories
-            errors = []
             for path in paths:
                 if path.is_dir() and not path.is_symlink():
                     res = chmod_recursive(path, new_mode, file_mode=new_mode)
-                    if not res.success:
-                        errors.append(res.error)
                 else:
                     res = chmod_files([path.name], self.active_panel.path, new_mode)
-                    if not res.success:
-                        errors.append(res.error)
-            if errors:
-                self._show_error('; '.join(errors))
+                if res.success:
+                    succeeded += 1
+                else:
+                    all_errors.extend(res.errors or ([res.error] if res.error else []))
+                    # The directory partially succeeded if any descendant
+                    # was changed even though the overall result is failure.
+                    if res.changed_files:
+                        succeeded += 1 if not all_errors else 0
         else:
             res = chmod_files(files, self.active_panel.path, new_mode)
-            if not res.success:
-                self._show_error(res.error)
+            if res.success:
+                succeeded = len(files)
+            else:
+                succeeded = len(res.changed_files)
+                all_errors.extend(res.errors or ([res.error] if res.error else []))
+
+        if all_errors:
+            self._show_error(format_partial_success_message(
+                'Chmod', total=len(paths), succeeded=succeeded, errors=all_errors,
+            ))
 
         self.active_panel.refresh()
 
@@ -1489,7 +1520,12 @@ class App:
 
         res = chown_files(files, self.active_panel.path, uid, gid)
         if not res.success:
-            self._show_error(res.error)
+            self._show_error(format_partial_success_message(
+                'Chown',
+                total=len(files),
+                succeeded=len(res.changed_files),
+                errors=res.errors or [res.error] if res.error else [],
+            ))
 
         self.active_panel.refresh()
 
