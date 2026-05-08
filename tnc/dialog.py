@@ -1091,11 +1091,16 @@ _GRID_BITS = [
 _SPECIAL_BITS = ['setuid', 'setgid', 'sticky']
 
 
-class ChmodDialog:
+class ChmodDialog(Modal):
     """Dialog for changing file permissions.
 
     Displays a checkbox grid for rwx permissions and special bits,
     with live octal mode preview.
+
+    Issue #16: subclasses :class:`Modal` so it inherits mouse routing.
+    Click on any checkbox toggles it (and moves focus there); click on
+    OK / Cancel activates them. All existing keyboard navigation
+    (arrows, Tab, Space, Enter, Esc) is preserved.
     """
 
     def __init__(
@@ -1117,6 +1122,7 @@ class ChmodDialog:
         """
         from tnc.permissions import TriState, get_permission_bits
 
+        super().__init__()
         self.file_count = file_count
         self.has_directory = has_directory
         self.filename = filename
@@ -1128,6 +1134,13 @@ class ChmodDialog:
         self.focus_section = 'grid'  # 'grid', 'special', 'recursive', 'buttons'
         self.button_focus = 0  # 0=OK, 1=Cancel
         self.cancelled = False
+        # Click hit regions populated during render(). Each entry is
+        # (x_start, x_end, y, action_id) where action_id is one of:
+        #   'grid:<row>:<col>'   (e.g. 'grid:0:0' = owner_read)
+        #   'special:<col>'      (e.g. 'special:0' = setuid)
+        #   'recursive'
+        #   'ok' | 'cancel'
+        self._click_targets: list[tuple[int, int, int, str]] = []
 
         # Initialize bit states
         self._bit_states: dict[str, TriState] = {}
@@ -1182,6 +1195,11 @@ class ChmodDialog:
     def handle_key(self, key: int) -> int | None:
         """Handle a keypress.
 
+        Returns the resulting mode int when OK is activated, None
+        otherwise (continuing or cancelled). Also calls
+        :meth:`Modal.set_result` so the inherited :meth:`Modal.show` loop
+        terminates correctly.
+
         Args:
             key: Key code from curses.
 
@@ -1193,6 +1211,7 @@ class ChmodDialog:
         # Escape cancels
         if key == 27:
             self.cancelled = True
+            self.set_result(None)
             return None
 
         # Navigation
@@ -1245,9 +1264,12 @@ class ChmodDialog:
         elif key in (curses.KEY_ENTER, ord('\n'), ord('\r')):
             if self.focus_section == 'buttons':
                 if self.button_focus == 0:  # OK
-                    return self.get_result_mode()
+                    mode = self.get_result_mode()
+                    self.set_result(mode)
+                    return mode
                 else:  # Cancel
                     self.cancelled = True
+                    self.set_result(None)
                     return None
             else:
                 # Enter on checkbox toggles it
@@ -1273,6 +1295,43 @@ class ChmodDialog:
                 self.focus_section = 'grid'
 
         return None  # Continue dialog
+
+    def handle_click(self, x: int, y: int, button_state: int) -> None:
+        """Click on any registered hit region: toggle / activate (#16)."""
+        if not (button_state & curses.BUTTON1_CLICKED):
+            return
+        for x_start, x_end, target_y, action_id in self._click_targets:
+            if y == target_y and x_start <= x < x_end:
+                self._activate_action(action_id)
+                return
+
+    def _activate_action(self, action_id: str) -> None:
+        """Apply the side effect of clicking the given hit region."""
+        if action_id == 'ok':
+            mode = self.get_result_mode()
+            self.set_result(mode)
+            return
+        if action_id == 'cancel':
+            self.cancelled = True
+            self.set_result(None)
+            return
+        if action_id == 'recursive':
+            self.focus_section = 'recursive'
+            self.toggle_recursive()
+            return
+        if action_id.startswith('grid:'):
+            _, row, col = action_id.split(':')
+            self.focus_section = 'grid'
+            self.cursor_row = int(row)
+            self.cursor_col = int(col)
+            self.toggle_current()
+            return
+        if action_id.startswith('special:'):
+            _, col = action_id.split(':')
+            self.focus_section = 'special'
+            self.cursor_col = int(col)
+            self.toggle_current()
+            return
 
     def get_result_mode(self) -> int:
         """Calculate mode from current bit states.
@@ -1328,6 +1387,9 @@ class ChmodDialog:
         dialog_attr = get_attr(PAIR_DIALOG)
         title_attr = get_attr(PAIR_DIALOG_TITLE)
 
+        # Reset click hit-regions; populated as we render each focusable element.
+        self._click_targets.clear()
+
         # Draw border and title
         title = 'Change Permissions'
         top_border = '┌─ ' + title + ' ' + '─' * (width - len(title) - 5) + '┐'
@@ -1355,7 +1417,14 @@ class ChmodDialog:
         self._draw_line(win, line_y, start_x, width, header, dialog_attr)
         line_y += 1
 
-        # Permission grid
+        # Permission grid. Each cell has the layout
+        #   [2-space pad][label 6][col0 9-char chunk][col1 9-char chunk][col2]
+        # where each col chunk is "  <5-char-checkbox>  ". The line itself is
+        # prefixed by '│ ' (2 chars) inside the start_x offset (see _draw_line).
+        # So col_idx N's checkbox visible region starts at:
+        #   start_x + 2 (border) + 2 (pad) + 6 (label) + N*9 + 2 (chunk pad) + 1 (>/space)
+        # = start_x + 13 + N*9. The clickable bracketed checkbox is 5 chars
+        # ('>[x]<' or ' [x] ').
         row_labels = ['Owner', 'Group', 'Other']
         for row_idx, label in enumerate(row_labels):
             row_text = f'  {label:6}'
@@ -1374,6 +1443,12 @@ class ChmodDialog:
 
                 row_text += f'  {checkbox}  '
 
+                # Record click hit region (the visible 5-char checkbox span).
+                cb_x = start_x + 13 + col_idx * 9
+                self._click_targets.append(
+                    (cb_x, cb_x + 5, line_y, f'grid:{row_idx}:{col_idx}')
+                )
+
             self._draw_line(win, line_y, start_x, width, row_text, dialog_attr)
             line_y += 1
 
@@ -1381,7 +1456,12 @@ class ChmodDialog:
         self._draw_line(win, line_y, start_x, width, '', dialog_attr)
         line_y += 1
 
-        # Special bits row
+        # Special bits row. Layout:
+        #   '  Special:' (10 chars) then per-column 14 chars:
+        #       focused:    '  >[x]< Set UID' (15-char-ish; actually 2 pad + 5 cb + 1 sp + 7 label = 15)
+        #       unfocused:  '   [x]  Set UID' (3 pad + 3 cb + 2 pad + 7 label = 15)
+        # We track checkbox span = 5 chars (the bracketed cell).
+        # column_x = start_x + 2 (border) + 10 (label) + col_idx * 15 + 2 (pad)
         special_text = '  Special:'
         special_labels = ['Set UID', 'Set GID', 'Sticky']
         for col_idx, (bit_name, label) in enumerate(zip(_SPECIAL_BITS, special_labels)):
@@ -1392,6 +1472,11 @@ class ChmodDialog:
                 special_text += f'  >{checkbox}< {label}'
             else:
                 special_text += f'   {checkbox}  {label}'
+
+            cb_x = start_x + 12 + col_idx * 15
+            self._click_targets.append(
+                (cb_x, cb_x + 5, line_y, f'special:{col_idx}')
+            )
 
         self._draw_line(win, line_y, start_x, width, special_text, dialog_attr)
         line_y += 1
@@ -1405,7 +1490,10 @@ class ChmodDialog:
         self._draw_line(win, line_y, start_x, width, f'  Mode: {octal}', dialog_attr)
         line_y += 1
 
-        # Recursive option (only for directories)
+        # Recursive option (only for directories). Layout matches Special:
+        #   focused:    '  >[x]< Apply recursively'  (cb at offset 2)
+        #   unfocused:  '   [x]  Apply recursively'  (cb at offset 3)
+        # cb hit-region anchors at start_x + 4 (border 2 + pad 2) and is 5 wide.
         if self.has_directory:
             self._draw_line(win, line_y, start_x, width, '', dialog_attr)
             line_y += 1
@@ -1415,6 +1503,9 @@ class ChmodDialog:
                 recursive_text = f'  >{checkbox}< Apply recursively'
             else:
                 recursive_text = f'   {checkbox}  Apply recursively'
+            self._click_targets.append(
+                (start_x + 4, start_x + 9, line_y, 'recursive')
+            )
             self._draw_line(win, line_y, start_x, width, recursive_text, dialog_attr)
             line_y += 1
 
@@ -1422,11 +1513,23 @@ class ChmodDialog:
         self._draw_line(win, line_y, start_x, width, '', dialog_attr)
         line_y += 1
 
-        # Buttons
+        # Buttons. The full button text is centered within (width - 4) chars.
         ok_btn = '[  OK  ]' if self.focus_section != 'buttons' or self.button_focus != 0 else '[ >OK< ]'
         cancel_btn = '[Cancel]' if self.focus_section != 'buttons' or self.button_focus != 1 else '[>Cancel<]'
-        buttons = f'{ok_btn}  {cancel_btn}'.center(width - 4)
+        button_pair = f'{ok_btn}  {cancel_btn}'
+        buttons = button_pair.center(width - 4)
         self._draw_line(win, line_y, start_x, width, buttons, dialog_attr)
+
+        # Compute button hit-regions from the centered string. _draw_line
+        # adds '│ ' (2-char prefix) at start_x, so the centered text starts
+        # at start_x + 2 + leading_padding.
+        leading_pad = (width - 4 - len(button_pair)) // 2
+        ok_x_start = start_x + 2 + leading_pad
+        ok_x_end = ok_x_start + len(ok_btn)
+        cancel_x_start = ok_x_end + 2  # 2 spaces between buttons
+        cancel_x_end = cancel_x_start + len(cancel_btn)
+        self._click_targets.append((ok_x_start, ok_x_end, line_y, 'ok'))
+        self._click_targets.append((cancel_x_start, cancel_x_end, line_y, 'cancel'))
         line_y += 1
 
         # Bottom border
@@ -1456,26 +1559,8 @@ class ChmodDialog:
         else:
             return '[ ]'
 
-    def show(self, win: Any) -> int | None:
-        """Show dialog and handle input until done.
-
-        Args:
-            win: Curses window.
-
-        Returns:
-            New mode (int) or None if cancelled.
-        """
-        while True:
-            self.render(win)
-            key = win.getch()
-            result = self.handle_key(key)
-
-            if result is not None:
-                return result
-
-            # Check if cancelled (Escape or Cancel button)
-            if self.cancelled:
-                return None
+    # show() inherited from Modal; the loop drives render → getch → handle_key
+    # / handle_click and terminates when set_result fires.
 
 
 def chmod_dialog(
