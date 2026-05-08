@@ -2,6 +2,7 @@
 
 import curses
 import fnmatch
+import os
 import stat
 from dataclasses import dataclass
 from pathlib import Path
@@ -163,25 +164,25 @@ class Panel:
             if self.path.parent != self.path:
                 self.entries.append(Path('..'))
 
-            # List directory contents
-            items = list(self.path.iterdir())
-
-            # Filter hidden files if needed
-            if not self.show_hidden:
-                items = [p for p in items if not p.name.startswith('.')]
-
-            # Separate directories and files. A single bad inode (stale NFS
-            # handle, transient permission issue) must not nuke the whole
-            # listing — classify the unreadable entry as a file so the user
-            # still sees it and can act on it.
+            # Single-pass classification using os.scandir, which gives us
+            # is_dir() without an extra stat() syscall. A bad inode is
+            # classified as a file so the user can still act on it.
             dirs: list[Path] = []
             files: list[Path] = []
-            for p in items:
-                try:
-                    is_dir = p.is_dir()
-                except OSError:
-                    is_dir = False
-                (dirs if is_dir else files).append(p)
+            show_hidden = self.show_hidden
+            with os.scandir(self.path) as it:
+                for entry in it:
+                    if not show_hidden and entry.name.startswith('.'):
+                        continue
+                    try:
+                        is_dir = entry.is_dir()
+                    except OSError:
+                        is_dir = False
+                    p = Path(entry.path)
+                    if is_dir:
+                        dirs.append(p)
+                    else:
+                        files.append(p)
 
             # Sort both lists according to current sort order
             dirs = self._sort_entries(dirs)

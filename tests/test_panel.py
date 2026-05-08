@@ -108,7 +108,7 @@ class TestPanelRefresh(unittest.TestCase):
 
     def test_refresh_handles_permission_error(self):
         """Permission error should set error message."""
-        with mock.patch.object(Path, 'iterdir', side_effect=PermissionError()):
+        with mock.patch('tnc.panel.os.scandir', side_effect=PermissionError()):
             panel = Panel('/restricted', width=40, height=20)
             self.assertEqual(panel.error_message, 'Permission denied')
 
