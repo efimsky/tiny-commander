@@ -745,6 +745,92 @@ class TestMockDialogProvider(unittest.TestCase):
         self.assertEqual(result, 'nano')
 
 
+class TestOverwriteDialogMouse(unittest.TestCase):
+    """Issue #16: OverwriteModal must respond to mouse clicks and arrow keys
+    while preserving y/n/a/s/o/Esc shortcuts."""
+
+    def _build_modal(self):
+        from tnc.dialog import OverwriteModal
+        return OverwriteModal(
+            filename='file.txt',
+            source_size=1024,
+            dest_size=2048,
+            source_mtime=1000.0,
+            dest_mtime=900.0,
+            current=1,
+            total=1,
+        )
+
+    @patch('tnc.dialog.get_attr', return_value=0)
+    def test_click_on_each_of_five_buttons_returns_correct_choice(self, _attr):
+        from tnc.file_ops import OverwriteChoice
+        expected = [
+            OverwriteChoice.YES,
+            OverwriteChoice.NO,
+            OverwriteChoice.YES_ALL,
+            OverwriteChoice.NO_ALL,
+            OverwriteChoice.YES_OLDER,
+        ]
+
+        for choice in expected:
+            with self.subTest(choice=choice):
+                modal = self._build_modal()
+                win = MagicMock()
+                win.getmaxyx.return_value = (24, 80)
+                modal.render(win)
+                # Locate this button by value in the bar's hit-region cache.
+                entry = next(
+                    e for e in modal.button_bar.button_positions if e[3] == choice
+                )
+                x_start, x_end, btn_y, _ = entry
+                midx = (x_start + x_end) // 2
+
+                win.getch.side_effect = [curses.KEY_MOUSE]
+                with patch(
+                    'curses.getmouse',
+                    return_value=(0, midx, btn_y, 0, curses.BUTTON1_CLICKED),
+                ):
+                    self.assertEqual(modal.show(win), choice)
+
+    @patch('tnc.dialog.get_attr', return_value=0)
+    def test_arrow_keys_cycle_then_enter_activates(self, _attr):
+        from tnc.file_ops import OverwriteChoice
+        modal = self._build_modal()
+        win = MagicMock()
+        win.getmaxyx.return_value = (24, 80)
+        # Start at Yes (focus 0). Right twice → All (index 2). Enter activates.
+        win.getch.side_effect = [
+            curses.KEY_RIGHT, curses.KEY_RIGHT, ord('\n'),
+        ]
+        self.assertEqual(modal.show(win), OverwriteChoice.YES_ALL)
+
+    @patch('tnc.dialog.get_attr', return_value=0)
+    def test_existing_letter_shortcuts_preserved(self, _attr):
+        from tnc.dialog import overwrite_dialog
+        from tnc.file_ops import OverwriteChoice
+        cases = [
+            (ord('y'), OverwriteChoice.YES), (ord('Y'), OverwriteChoice.YES),
+            (ord('n'), OverwriteChoice.NO),  (ord('N'), OverwriteChoice.NO),
+            (ord('a'), OverwriteChoice.YES_ALL),
+            (ord('s'), OverwriteChoice.NO_ALL),
+            (ord('o'), OverwriteChoice.YES_OLDER),
+            (27, OverwriteChoice.CANCEL),
+        ]
+        for ch, expected in cases:
+            with self.subTest(ch=ch):
+                win = MagicMock()
+                win.getmaxyx.return_value = (24, 80)
+                win.getch.side_effect = [ch]
+                self.assertEqual(
+                    overwrite_dialog(
+                        win, 'file.txt', 1024, 2048,
+                        source_mtime=1000.0, dest_mtime=900.0,
+                        current=1, total=1,
+                    ),
+                    expected,
+                )
+
+
 class TestConfirmDialogMouse(unittest.TestCase):
     """Issue #16: ConfirmModal must respond to mouse clicks and arrow keys
     while keeping the original y/n/Esc/Enter shortcuts."""

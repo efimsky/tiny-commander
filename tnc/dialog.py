@@ -296,6 +296,93 @@ def confirm_dialog(
     return ConfirmModal(title, message, default_yes=default_yes).show(win)
 
 
+class OverwriteModal(Modal):
+    """File-already-exists overwrite prompt with mouse and arrow-key nav.
+
+    Five focusable buttons (Yes, No, All, Skip, Older). Esc cancels with
+    OverwriteChoice.CANCEL. Letter shortcuts y/n/a/s/o still work.
+    """
+
+    def __init__(
+        self,
+        filename: str,
+        source_size: int,
+        dest_size: int,
+        source_mtime: float,
+        dest_mtime: float,
+        current: int,
+        total: int,
+    ) -> None:
+        super().__init__()
+        self.title = f'File already exists - {current} of {total}'
+        self.filename = filename
+        self.source_info = (
+            f'Source:  {format_size(source_size):>10}   {format_time(source_mtime)}'
+        )
+        self.dest_info = (
+            f'Dest:    {format_size(dest_size):>10}   {format_time(dest_mtime)}'
+        )
+        self.button_bar = ButtonBar(
+            buttons=[
+                Button(label='Yes', shortcut='y', value=OverwriteChoice.YES),
+                Button(label='No', shortcut='n', value=OverwriteChoice.NO),
+                Button(label='All', shortcut='a', value=OverwriteChoice.YES_ALL),
+                Button(label='Skip', shortcut='s', value=OverwriteChoice.NO_ALL),
+                Button(label='Older', shortcut='o', value=OverwriteChoice.YES_OLDER),
+            ],
+            focused=0,
+        )
+        # Width must fit the title, the filename, file info rows, and the
+        # 5-button bar. The bar needs ~9 cells per button (`[ Older ]` is
+        # the widest button text) — keep the heuristic explicit.
+        min_button_bar_width = len(self.button_bar.buttons) * 9
+        self._width = max(
+            len(self.title) + 6,
+            len(filename) + 6,
+            len(self.source_info) + 6,
+            min_button_bar_width + 4,
+            50,
+        )
+
+    def render(self, win: Any) -> None:
+        body = [self.filename, '', self.source_info, self.dest_info, '']
+        box_y, box_x = draw_modal(win, self.title, body, width=self._width)
+        btn_y = box_y + 3 + len(body) - 1
+        self.button_bar.render(
+            win, y=btn_y, x_start=box_x + 2, total_width=self._width - 4
+        )
+        win.refresh()
+
+    def handle_key(self, key: int) -> None:
+        if key == 27:  # Escape
+            self.set_result(OverwriteChoice.CANCEL)
+            return
+        # Letter shortcuts (case-insensitive).
+        try:
+            ch = chr(key)
+        except ValueError:
+            ch = ''
+        shortcut_value = self.button_bar.activate_by_shortcut(ch)
+        if shortcut_value is not None:
+            self.set_result(shortcut_value)
+            return
+        if key in (curses.KEY_LEFT, curses.KEY_UP):
+            self.button_bar.move_focus(-1)
+            return
+        if key in (curses.KEY_RIGHT, curses.KEY_DOWN, ord('\t')):
+            self.button_bar.move_focus(1)
+            return
+        if key in (ord('\n'), ord('\r'), curses.KEY_ENTER):
+            self.set_result(self.button_bar.activate())
+
+    def handle_click(self, x: int, y: int, button_state: int) -> None:
+        if not (button_state & curses.BUTTON1_CLICKED):
+            return
+        value = self.button_bar.hit_test(x, y)
+        if value is not None:
+            self.set_result(value)
+
+
 def overwrite_dialog(
     win: Any,
     filename: str,
@@ -306,7 +393,9 @@ def overwrite_dialog(
     current: int,
     total: int
 ) -> OverwriteChoice:
-    """Show overwrite confirmation dialog with file details.
+    """Show overwrite confirmation dialog (mouse + keyboard).
+
+    Backed by :class:`OverwriteModal`. See class docstring for behaviour.
 
     Args:
         win: Curses window to draw on.
@@ -321,46 +410,15 @@ def overwrite_dialog(
     Returns:
         User's choice as OverwriteChoice enum.
     """
-    title = f'File already exists - {current} of {total}'
-
-    # Format file info
-    source_info = f'Source:  {format_size(source_size):>10}   {format_time(source_mtime)}'
-    dest_info = f'Dest:    {format_size(dest_size):>10}   {format_time(dest_mtime)}'
-
-    lines = [
-        filename,
-        '',
-        source_info,
-        dest_info,
-    ]
-
-    footer = '(y)es (n)o (a)ll (s)kip-all (o)nly-newer Esc'
-
-    # Calculate width to fit content
-    width = max(
-        len(title) + 6,
-        len(filename) + 6,
-        len(source_info) + 6,
-        len(footer) + 6,
-        50
-    )
-
-    draw_modal(win, title, lines, width=width, footer=footer)
-
-    while True:
-        key = win.getch()
-        if key in (ord('y'), ord('Y')):
-            return OverwriteChoice.YES
-        elif key in (ord('n'), ord('N')):
-            return OverwriteChoice.NO
-        elif key in (ord('a'), ord('A')):
-            return OverwriteChoice.YES_ALL
-        elif key in (ord('s'), ord('S')):
-            return OverwriteChoice.NO_ALL
-        elif key in (ord('o'), ord('O')):
-            return OverwriteChoice.YES_OLDER
-        elif key == 27:  # Escape
-            return OverwriteChoice.CANCEL
+    return OverwriteModal(
+        filename=filename,
+        source_size=source_size,
+        dest_size=dest_size,
+        source_mtime=source_mtime,
+        dest_mtime=dest_mtime,
+        current=current,
+        total=total,
+    ).show(win)
 
 
 def show_summary(
