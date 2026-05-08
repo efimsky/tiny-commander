@@ -341,6 +341,48 @@ class TestOverwriteOlder(unittest.TestCase):
                 self.assertEqual(len(result.skipped_files), 1)
 
 
+class TestBrokenSymlinkDestination(unittest.TestCase):
+    """A broken symlink at dest must not produce a confusing error (issue #31)."""
+
+    def test_copy_over_broken_symlink_succeeds(self):
+        """Copy onto a broken symlink should silently replace it, not error."""
+        with tempfile.TemporaryDirectory() as source_dir:
+            with tempfile.TemporaryDirectory() as dest_dir:
+                Path(source_dir, 'x.txt').write_text('hello')
+                # Create a broken symlink at the destination
+                broken = Path(dest_dir, 'x.txt')
+                broken.symlink_to('/nonexistent/target/path')
+                handler = MockOverwriteHandler([])  # No prompt expected
+
+                result = copy_files_with_overwrite(
+                    ['x.txt'], source_dir, dest_dir, handler
+                )
+
+                self.assertTrue(result.success, f'Got error: {result.error!r}')
+                self.assertEqual(handler.prompt_count, 0,
+                    'Should not prompt for a broken symlink — there is no real data to lose')
+                self.assertTrue(broken.is_file())
+                self.assertEqual(broken.read_text(), 'hello')
+
+    def test_move_over_broken_symlink_succeeds(self):
+        """Move onto a broken symlink should silently replace it."""
+        with tempfile.TemporaryDirectory() as source_dir:
+            with tempfile.TemporaryDirectory() as dest_dir:
+                src = Path(source_dir, 'x.txt')
+                src.write_text('moved')
+                broken = Path(dest_dir, 'x.txt')
+                broken.symlink_to('/nonexistent/target')
+                handler = MockOverwriteHandler([])
+
+                result = move_files_with_overwrite(
+                    ['x.txt'], source_dir, dest_dir, handler
+                )
+
+                self.assertTrue(result.success)
+                self.assertFalse(src.exists())
+                self.assertEqual(broken.read_text(), 'moved')
+
+
 class TestOverwriteTypeMismatch(unittest.TestCase):
     """Refuse to overwrite when source and destination types differ."""
 
