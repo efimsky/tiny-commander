@@ -135,30 +135,37 @@ def get_common_mode(
     return result, failed_count
 
 
-def get_system_users() -> list[str]:
-    """Get list of system usernames.
+# Module-level caches. pwd.getpwall() / grp.getgrall() can take seconds
+# on systems backed by LDAP / Active Directory; we never need fresher
+# data than once per session, so cache eagerly on first call.
+_USER_CACHE: list[str] | None = None
+_GROUP_CACHE: list[str] | None = None
 
-    Returns:
-        Sorted list of usernames.
-    """
+
+def get_system_users() -> list[str]:
+    """Get list of system usernames (cached for the session)."""
+    global _USER_CACHE
+    if _USER_CACHE is not None:
+        return _USER_CACHE
     try:
-        users = [entry.pw_name for entry in pwd.getpwall()]
-        return sorted(users)
+        users = sorted(entry.pw_name for entry in pwd.getpwall())
     except (KeyError, OSError):
-        return []
+        users = []
+    _USER_CACHE = users
+    return _USER_CACHE
 
 
 def get_system_groups() -> list[str]:
-    """Get list of system group names.
-
-    Returns:
-        Sorted list of group names.
-    """
+    """Get list of system group names (cached for the session)."""
+    global _GROUP_CACHE
+    if _GROUP_CACHE is not None:
+        return _GROUP_CACHE
     try:
-        groups = [entry.gr_name for entry in grp.getgrall()]
-        return sorted(groups)
+        groups = sorted(entry.gr_name for entry in grp.getgrall())
     except (KeyError, OSError):
-        return []
+        groups = []
+    _GROUP_CACHE = groups
+    return _GROUP_CACHE
 
 
 def filter_by_prefix(items: list[str], prefix: str) -> list[str]:
