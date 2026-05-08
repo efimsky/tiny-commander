@@ -69,6 +69,7 @@ class Action(Enum):
     TOGGLE_MOUSE = auto()
     TOGGLE_MOUSE_SWAP = auto()
     MENU = auto()  # Toggle menu dropdown
+    HELP = auto()  # F1: show keybindings dialog (issue #78)
     CHMOD = auto()  # Change permissions
     CHOWN = auto()  # Change ownership
     # Panel-specific sort actions
@@ -613,7 +614,13 @@ class App:
         Returns:
             Action if key was handled, None if not an operation key.
         """
-        if key == curses.KEY_F3:
+        # F1 / F2 (issue #78): mc parity. F1 opens the keybindings help
+        # dialog; F2 aliases F9's menu-dropdown toggle.
+        if key == curses.KEY_F1:
+            return Action.HELP
+        elif key == curses.KEY_F2:
+            return Action.MENU
+        elif key == curses.KEY_F3:
             return Action.VIEW
         elif key == curses.KEY_F4:
             return Action.EDIT
