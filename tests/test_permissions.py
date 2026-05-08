@@ -233,6 +233,36 @@ class TestSystemGroups(unittest.TestCase):
         self.assertGreater(len(groups), 0)
 
 
+class TestSystemUserGroupCaching(unittest.TestCase):
+    """get_system_users / get_system_groups must cache their results (issue #38)."""
+
+    def setUp(self):
+        # Reset the cache so each test starts fresh
+        from tnc import permissions
+        permissions._USER_CACHE = None
+        permissions._GROUP_CACHE = None
+
+    def test_get_system_users_calls_pwd_only_once(self):
+        from unittest import mock
+        from tnc import permissions
+
+        with mock.patch.object(permissions.pwd, 'getpwall', wraps=permissions.pwd.getpwall) as spy:
+            permissions.get_system_users()
+            permissions.get_system_users()
+            permissions.get_system_users()
+        self.assertEqual(spy.call_count, 1,
+            'pwd.getpwall should only be called once per session')
+
+    def test_get_system_groups_calls_grp_only_once(self):
+        from unittest import mock
+        from tnc import permissions
+
+        with mock.patch.object(permissions.grp, 'getgrall', wraps=permissions.grp.getgrall) as spy:
+            permissions.get_system_groups()
+            permissions.get_system_groups()
+        self.assertEqual(spy.call_count, 1)
+
+
 class TestFilterByPrefix(unittest.TestCase):
     """Tests for filter_by_prefix function."""
 
