@@ -509,6 +509,8 @@ def _process_file_operation(
 
         except PermissionError:
             errors.append(f'{filename}: Permission denied')
+        except shutil.SameFileError:
+            errors.append(f'{filename}: Source and destination are the same file')
         except OSError as err:
             errors.append(f'{filename}: {err}')
 
@@ -959,6 +961,8 @@ def _process_files_with_overwrite(
 
         except PermissionError:
             errors.append(f'{filename}: Permission denied')
+        except shutil.SameFileError:
+            errors.append(f'{filename}: Source and destination are the same file')
         except OSError as err:
             errors.append(f'{filename}: {err}')
 
@@ -1075,5 +1079,12 @@ def rename_file(parent_dir: str | Path, old_name: str, new_name: str) -> RenameR
         return RenameResult(success=True, new_name=new_name)
     except PermissionError:
         return RenameResult(success=False, error='Permission denied')
+    except FileNotFoundError:
+        # The exists() check above passed, so this is a TOCTOU race
+        # (something removed the file between the check and rename).
+        return RenameResult(success=False, error='Source not found (concurrently removed)')
+    except FileExistsError:
+        # Destination appeared between our check and the rename.
+        return RenameResult(success=False, error='Destination already exists (concurrent write)')
     except OSError as err:
         return RenameResult(success=False, error=str(err))
