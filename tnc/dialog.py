@@ -2273,3 +2273,107 @@ def input_dialog(
     dialog = InputDialog(title, prompt, default_value)
     result = dialog.show(win)
     return result if result is not None else ''
+
+
+# F1 Help dialog content (issue #78). Hard-coded rather than generated
+# from the keybinding registry — refactoring handle_key to a registry
+# is OOS for v1. Keep this in lockstep with tnc/app.py:handle_key and
+# the CLAUDE.md "Key Bindings (Target)" section.
+HELP_CONTENT = (
+    ('Navigation', (
+        ('Tab', 'Switch active panel'),
+        ('Arrows', 'Navigate'),
+        ('Enter', 'Enter dir / open file'),
+        ('Alt+Left / Alt+Right', 'Back / forward through history'),
+        ('/', 'Quick search in panel'),
+        ('Esc', 'Close dialog / cancel search'),
+    )),
+    ('File operations', (
+        ('F3', 'View'),
+        ('F4', 'Edit'),
+        ('Shift+F4', 'Create new file'),
+        ('F5', 'Copy to other panel'),
+        ('F6', 'Move to other panel'),
+        ('F7', 'Make directory'),
+        ('F8', 'Delete (with confirmation)'),
+    )),
+    ('Selection', (
+        ('Insert', 'Toggle selection on current entry'),
+        ('+', 'Select by pattern'),
+        ('-', 'Deselect by pattern'),
+        ('*', 'Invert selection'),
+    )),
+    ('Sort', (
+        ('Shift+F3', 'Cycle sort order'),
+        ('Ctrl+F3', 'Toggle reverse sort'),
+    )),
+    ('Other', (
+        ('F1', 'This help'),
+        ('F2 / F9', 'Menu (dropdown)'),
+        ('F10', 'Quit'),
+        ('Alt+F3', 'Calculate directory size'),
+        ('Alt+Enter', 'Insert filename into command line'),
+        ('Alt+O', 'Open in Finder (macOS only)'),
+    )),
+)
+
+
+class HelpModal(Modal):
+    """F1 keybindings help dialog (issue #78).
+
+    Displays HELP_CONTENT grouped by section with an OK button. Any
+    keystroke or click on OK dismisses; outside-modal clicks are
+    ignored (consistent with the other modals from issue #16).
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.title = 'Keyboard Shortcuts'
+        longest = max(
+            len(f'  {key:22s}  {desc}')
+            for _, items in HELP_CONTENT for key, desc in items
+        )
+        self._width = max(longest + 4, len(self.title) + 6, 50)
+        self.button_bar = ButtonBar(
+            buttons=[Button(label='OK', shortcut='', value=None)],
+            focused=0,
+        )
+
+    def _build_body(self) -> list[str]:
+        lines: list[str] = []
+        for i, (section, items) in enumerate(HELP_CONTENT):
+            if i > 0:
+                lines.append('')
+            lines.append(section)
+            for key, desc in items:
+                lines.append(f'  {key:22s}  {desc}')
+        lines.append('')  # reserved for button bar overlay
+        return lines
+
+    def render(self, win: Any) -> None:
+        body = self._build_body()
+        box_y, box_x = draw_modal(win, self.title, body, width=self._width)
+        btn_y = box_y + 3 + len(body) - 1
+        self.button_bar.render(
+            win, y=btn_y, x_start=box_x + 2, total_width=self._width - 4,
+            base_attr=get_attr(PAIR_DIALOG),
+        )
+        win.refresh()
+
+    def handle_key(self, key: int) -> None:
+        # Any key dismisses (Esc, Enter, OK shortcut, etc.).
+        # Matches ErrorModal / SummaryModal back-compat semantics.
+        self.set_result(None)
+
+    def handle_click(self, x: int, y: int, button_state: int) -> None:
+        if not (button_state & curses.BUTTON1_CLICKED):
+            return
+        for x_start, x_end, btn_y, _value in self.button_bar.button_positions:
+            if y == btn_y and x_start <= x < x_end:
+                self.set_result(None)
+                return
+
+
+def help_dialog(win: Any) -> None:
+    """Show the F1 keybindings help modal."""
+    HelpModal().show(win)
