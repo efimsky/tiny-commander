@@ -143,54 +143,36 @@ class TestFunctionBar(unittest.TestCase):
         self.assertGreaterEqual(mock_get_attr.call_count, 2)
 
     def test_render_evenly_distributes_keys(self) -> None:
-        """Test that keys are evenly distributed across the width (mc-style)."""
+        """Cell boundaries are evenly distributed across the width.
+
+        After issue #18, labels are centered *within* each cell, so the
+        rendered key-text x-position is no longer i*cell_width. The cell
+        click regions (button_positions) remain evenly spaced — that's
+        the real "even distribution" invariant.
+        """
         bar = FunctionBar()
         mock_win = MagicMock()
 
         bar.render(mock_win, y=24, width=80)
 
         # With 8 keys and width=80, cell_width = 80 // 8 = 10
-        # Keys should start at positions: 0, 10, 20, 30, 40, 50, 60, 70
-        # Extract x positions of F-key renders (skip the initial clear line call)
-        key_x_positions = []
-        for call_obj in mock_win.addstr.call_args_list:
-            args = call_obj[0]
-            if len(args) >= 3:
-                text = args[2]
-                x_pos = args[1]
-                # F-key text starts with space then 'F'
-                if text.strip().startswith('F'):
-                    key_x_positions.append(x_pos)
-
-        # Should have 8 keys (F3, F4, F5, F6, F7, F8, F9, F10)
-        self.assertEqual(len(key_x_positions), 8)
-
-        # Check even distribution: each key should be at i * cell_width
-        cell_width = 80 // 8  # = 10
-        expected_positions = [i * cell_width for i in range(8)]
-        self.assertEqual(key_x_positions, expected_positions)
+        cell_width = 80 // 8
+        expected_starts = [i * cell_width for i in range(8)]
+        actual_starts = [start_x for start_x, _, _ in bar.button_positions]
+        self.assertEqual(actual_starts, expected_starts)
 
     def test_render_even_distribution_narrow_width(self) -> None:
-        """Test even distribution with narrower width."""
+        """Cell boundaries stay evenly spaced regardless of the label
+        centering offset within each cell."""
         bar = FunctionBar()
         mock_win = MagicMock()
 
         bar.render(mock_win, y=24, width=80)
 
-        # With 8 keys and width=80, cell_width = 80 // 8 = 10
-        key_x_positions = []
-        for call_obj in mock_win.addstr.call_args_list:
-            args = call_obj[0]
-            if len(args) >= 3:
-                text = args[2]
-                x_pos = args[1]
-                if text.strip().startswith('F'):
-                    key_x_positions.append(x_pos)
-
-        self.assertEqual(len(key_x_positions), 8)
-        cell_width = 80 // 8  # = 10
-        expected_positions = [i * cell_width for i in range(8)]
-        self.assertEqual(key_x_positions, expected_positions)
+        cell_width = 80 // 8
+        expected_starts = [i * cell_width for i in range(8)]
+        actual_starts = [start_x for start_x, _, _ in bar.button_positions]
+        self.assertEqual(actual_starts, expected_starts)
 
 
 if __name__ == '__main__':

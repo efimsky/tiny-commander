@@ -159,15 +159,25 @@ class FunctionBar:
             key_text = f' {key}'
             label_text = label
 
+            # Center the label within its cell. Issue #18: left-aligned
+            # labels left trailing cyan padding sitting right next to the
+            # next button's label, so a click in that gap landed in the
+            # previous cell and triggered the wrong action. Centering puts
+            # the visible text in the middle of its clickable region. The
+            # max(0, ...) clamp keeps narrow terminals (label wider than
+            # cell) rendering at start_x.
+            text_len = len(key_text) + len(label_text)
+            text_start = start_x + max(0, (cell_width - text_len) // 2)
+
             # Check if this button should be highlighted (visual feedback)
             if self.highlight_button == key:
                 # Invert colors for feedback
-                safe_addstr(win, y, start_x, key_text, label_attr)
-                safe_addstr(win, y, start_x + len(key_text), label_text, fkey_attr)
+                safe_addstr(win, y, text_start, key_text, label_attr)
+                safe_addstr(win, y, text_start + len(key_text), label_text, fkey_attr)
             else:
                 # Normal rendering: F-key number (white on black), label (black on cyan)
-                safe_addstr(win, y, start_x, key_text, fkey_attr)
-                safe_addstr(win, y, start_x + len(key_text), label_text, label_attr)
+                safe_addstr(win, y, text_start, key_text, fkey_attr)
+                safe_addstr(win, y, text_start + len(key_text), label_text, label_attr)
 
     def contains_point(self, x: int, y: int) -> bool:
         """Check if a point is within the function bar.
