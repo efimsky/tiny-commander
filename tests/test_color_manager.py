@@ -48,6 +48,30 @@ class TestColorManagerInitColors(unittest.TestCase):
         self.assertTrue(result)
         self.assertTrue(manager.colors_enabled)
 
+    @mock.patch('curses.use_default_colors')
+    @mock.patch('curses.start_color')
+    @mock.patch('curses.has_colors', return_value=True)
+    def test_init_colors_tolerates_init_pair_failures(
+        self, _mock_has, _mock_start, _mock_default
+    ):
+        """8-color terminals where init_pair raises must not crash startup (issue #40)."""
+        import curses
+        manager = ColorManager()
+
+        # Simulate a terminal where the first few init_pair calls succeed
+        # but later ones fail (limited pair count).
+        call_count = [0]
+
+        def flaky_init_pair(*args, **kwargs):
+            call_count[0] += 1
+            if call_count[0] > 5:
+                raise curses.error('Color pair number out of range')
+
+        with mock.patch('curses.init_pair', side_effect=flaky_init_pair):
+            # Must not raise; the app should fall through to monochrome
+            # for the unsupported pairs.
+            manager.init_colors()
+
 
 class TestColorManagerSetTheme(unittest.TestCase):
     """Tests for ColorManager.set_classic_theme()."""
