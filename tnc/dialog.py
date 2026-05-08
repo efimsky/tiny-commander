@@ -6,7 +6,7 @@ from typing import Any, Protocol
 
 from tnc.colors import PAIR_DIALOG, PAIR_DIALOG_TITLE, get_attr
 from tnc.file_ops import OverwriteChoice, OverwriteHandler
-from tnc.utils import safe_addstr
+from tnc.utils import format_size, safe_addstr
 
 
 class DialogProvider(Protocol):
@@ -118,23 +118,6 @@ def _render_dialog_frame(width: int, title: str = '') -> dict:
     }
 
 
-def format_size(size: int) -> str:
-    """Format file size in human-readable format.
-
-    Args:
-        size: Size in bytes.
-
-    Returns:
-        Formatted size string (e.g., "4.2 KB").
-    """
-    if size < 1024:
-        return f'{size} B'
-    elif size < 1024 * 1024:
-        return f'{size / 1024:.1f} KB'
-    elif size < 1024 * 1024 * 1024:
-        return f'{size / (1024 * 1024):.1f} MB'
-    else:
-        return f'{size / (1024 * 1024 * 1024):.1f} GB'
 
 
 def format_time(mtime: float) -> str:
