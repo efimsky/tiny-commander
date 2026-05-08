@@ -170,5 +170,43 @@ class TestShowError(unittest.TestCase):
         self.assertEqual(call_args[0][2], "Something went wrong")  # message
 
 
+class TestEscDelayDefault(unittest.TestCase):
+    """run_app must set a fast ESCDELAY before curses init (issue #41)."""
+
+    def test_run_app_sets_escdelay_default(self):
+        """ESCDELAY should default to 25 so Escape isn't laggy in dialogs."""
+        import os
+        from tnc.app import run_app
+
+        original = os.environ.get('ESCDELAY')
+        os.environ.pop('ESCDELAY', None)
+        try:
+            with mock.patch('curses.wrapper', return_value=0):
+                run_app()
+            self.assertEqual(os.environ.get('ESCDELAY'), '25')
+        finally:
+            if original is None:
+                os.environ.pop('ESCDELAY', None)
+            else:
+                os.environ['ESCDELAY'] = original
+
+    def test_run_app_preserves_user_override(self):
+        """An explicit ESCDELAY in the environment should be respected."""
+        import os
+        from tnc.app import run_app
+
+        original = os.environ.get('ESCDELAY')
+        os.environ['ESCDELAY'] = '500'
+        try:
+            with mock.patch('curses.wrapper', return_value=0):
+                run_app()
+            self.assertEqual(os.environ.get('ESCDELAY'), '500')
+        finally:
+            if original is None:
+                os.environ.pop('ESCDELAY', None)
+            else:
+                os.environ['ESCDELAY'] = original
+
+
 if __name__ == '__main__':
     unittest.main()
