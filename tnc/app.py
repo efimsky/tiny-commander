@@ -329,6 +329,16 @@ class App:
 
     def run(self) -> int:
         """Run the main application loop. Returns exit code."""
+        # Surface config parse warnings now that curses is up — printing
+        # to stderr would have been hidden behind the curses screen.
+        if getattr(self.config, 'parse_warnings', None):
+            show_error_dialog(
+                self.stdscr, 'Config warnings',
+                'Issues found in ' + self.config.path,
+                details=list(self.config.parse_warnings),
+            )
+            self.config.parse_warnings.clear()
+
         self.running = True
         while self.running:
             self.draw()

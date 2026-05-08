@@ -227,6 +227,41 @@ class TestMouseSwapConfig(unittest.TestCase):
             self.assertIn('mouse_swap = no', content)
 
 
+class TestConfigParseWarnings(unittest.TestCase):
+    """Config.load should validate values and surface warnings (issue #42)."""
+
+    def test_empty_editor_value_is_rejected_with_warning(self):
+        """`editor =` (empty) must not become an empty string."""
+        from tnc.config import Config
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg_path = Path(tmpdir) / 'config'
+            cfg_path.write_text('editor =\npager = less\n')
+            config = Config.load(str(cfg_path))
+            self.assertIsNone(config.editor,
+                'Empty editor value should leave config.editor as None')
+            self.assertTrue(any('editor' in w.lower() for w in config.parse_warnings),
+                f'Expected a warning about editor, got: {config.parse_warnings!r}')
+
+    def test_ambiguous_bool_value_warns(self):
+        """`mouse_enabled = maybe` must warn rather than silently being False."""
+        from tnc.config import Config
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg_path = Path(tmpdir) / 'config'
+            cfg_path.write_text('mouse_enabled = maybe\n')
+            config = Config.load(str(cfg_path))
+            self.assertTrue(any('mouse_enabled' in w for w in config.parse_warnings),
+                f'Expected a warning about mouse_enabled, got: {config.parse_warnings!r}')
+
+    def test_clean_config_has_no_warnings(self):
+        """A well-formed config file produces an empty warnings list."""
+        from tnc.config import Config
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg_path = Path(tmpdir) / 'config'
+            cfg_path.write_text('editor = nano\nmouse_enabled = yes\n')
+            config = Config.load(str(cfg_path))
+            self.assertEqual(config.parse_warnings, [])
+
+
 class TestConfigLoadResilience(unittest.TestCase):
     """Config.load should not crash startup on weird/corrupt config files (issue #27)."""
 

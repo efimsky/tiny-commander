@@ -75,14 +75,16 @@ class TestConfigMouseEnabled(unittest.TestCase):
                 content = f.read()
             self.assertIn('mouse_enabled = no', content)
 
-    def test_load_mouse_enabled_invalid_defaults_false(self):
-        """Invalid mouse_enabled value should be treated as False."""
+    def test_load_mouse_enabled_invalid_keeps_default_with_warning(self):
+        """Invalid mouse_enabled should warn and keep the default (issue #42)."""
         with tempfile.NamedTemporaryFile(mode='w', suffix='.conf', delete=False) as f:
             f.write('mouse_enabled = garbage\n')
             f.flush()
             config = Config.load(f.name)
-            # Invalid values (not yes/true/1) are treated as False
-            self.assertFalse(config.mouse_enabled)
+            # Default for mouse_enabled is True; invalid input must not
+            # silently flip it. The change is announced via parse_warnings.
+            self.assertTrue(config.mouse_enabled)
+            self.assertTrue(any('mouse_enabled' in w for w in config.parse_warnings))
 
 
 def create_mock_stdscr(rows: int = 24, cols: int = 80) -> mock.MagicMock:
