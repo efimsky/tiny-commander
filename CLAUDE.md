@@ -46,6 +46,8 @@ This is a modern tool for modern systems. If someone is on an older Python, they
 Tab         Switch active panel
 Arrow keys  Navigate
 Enter       Enter directory / open file with $EDITOR
+F1          Help (keybindings dialog)
+F2          Menu bar (alias of F9)
 F3          View file (pager)
 F4          Edit file ($EDITOR)
 F5          Copy
