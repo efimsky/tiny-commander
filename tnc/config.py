@@ -6,6 +6,20 @@ import sys
 from pathlib import Path
 
 
+_TRUTHY = ('yes', 'true', '1', 'on')
+_FALSY = ('no', 'false', '0', 'off')
+
+
+def _parse_bool(value: str) -> bool | None:
+    """Return True/False for known forms; None for anything ambiguous."""
+    lowered = value.lower()
+    if lowered in _TRUTHY:
+        return True
+    if lowered in _FALSY:
+        return False
+    return None
+
+
 class Config:
     """Configuration settings for Tiny Commander."""
 
@@ -23,6 +37,9 @@ class Config:
         self.mouse_enabled: bool = True  # Mouse support enabled by default
         self.mouse_swap: bool = False  # Swap mouse buttons (for left-handed users)
         self._unknown_keys: dict[str, str] = {}
+        # Warnings collected during load(), surfaced after curses init so
+        # the user sees them instead of a silent value coercion (#42).
+        self.parse_warnings: list[str] = []
 
     @classmethod
     def default_path(cls) -> str:
@@ -47,7 +64,7 @@ class Config:
 
         try:
             with open(path, 'r') as f:
-                for line in f:
+                for line_no, line in enumerate(f, start=1):
                     line = line.strip()
 
                     # Skip empty lines and comments
@@ -56,23 +73,32 @@ class Config:
 
                     # Parse key=value
                     if '=' not in line:
+                        config.parse_warnings.append(
+                            f'line {line_no}: ignoring line without "=": {line!r}'
+                        )
                         continue
 
                     key, value = line.split('=', 1)
                     key = key.strip()
                     value = value.strip()
 
-                    # Set known keys
-                    if key == 'editor':
-                        config.editor = value
-                    elif key == 'pager':
-                        config.pager = value
-                    elif key == 'classic_colors':
-                        config.classic_colors = value.lower() in ('yes', 'true', '1')
-                    elif key == 'mouse_enabled':
-                        config.mouse_enabled = value.lower() in ('yes', 'true', '1')
-                    elif key == 'mouse_swap':
-                        config.mouse_swap = value.lower() in ('yes', 'true', '1')
+                    if key in ('editor', 'pager'):
+                        if not value:
+                            config.parse_warnings.append(
+                                f'line {line_no}: empty {key} value ignored'
+                            )
+                        elif key == 'editor':
+                            config.editor = value
+                        else:
+                            config.pager = value
+                    elif key in ('classic_colors', 'mouse_enabled', 'mouse_swap'):
+                        parsed = _parse_bool(value)
+                        if parsed is None:
+                            config.parse_warnings.append(
+                                f'line {line_no}: {key}={value!r} is not a yes/no value, ignoring'
+                            )
+                        else:
+                            setattr(config, key, parsed)
                     else:
                         # Preserve unknown keys
                         config._unknown_keys[key] = value
