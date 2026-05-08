@@ -696,8 +696,11 @@ class App:
 
         # Show summary (with errors if any)
         self.draw()
-        # Split error string back into list for display
-        error_list = result.error.split('; ') if result.error else None
+        # Use the structured errors list directly — splitting result.error
+        # on '; ' was unsafe for filenames containing that sequence.
+        error_list = list(result.errors) if result.errors else (
+            [result.error] if result.error else None
+        )
         show_summary(
             self.stdscr, operation_name.lower(),
             **{summary_kwarg: len(processed_files)},
