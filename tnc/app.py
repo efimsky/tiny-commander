@@ -19,6 +19,7 @@ from tnc.dialog import (
     CursesOverwriteHandler,
     SelectionDialog,
     confirm_dialog,
+    help_dialog,
     input_dialog,
     show_error_dialog,
     show_summary,
@@ -69,6 +70,7 @@ class Action(Enum):
     TOGGLE_MOUSE = auto()
     TOGGLE_MOUSE_SWAP = auto()
     MENU = auto()  # Toggle menu dropdown
+    HELP = auto()  # F1: show keybindings dialog (issue #78)
     CHMOD = auto()  # Change permissions
     CHOWN = auto()  # Change ownership
     # Panel-specific sort actions
@@ -247,6 +249,7 @@ class App:
             Action.TOGGLE_MOUSE: self._toggle_mouse,
             Action.TOGGLE_MOUSE_SWAP: self._toggle_mouse_swap,
             Action.MENU: self._toggle_menu_dropdown,
+            Action.HELP: self._show_help,
             # Permission operations
             Action.CHMOD: self._prompt_chmod,
             Action.CHOWN: self._prompt_chown,
@@ -613,7 +616,13 @@ class App:
         Returns:
             Action if key was handled, None if not an operation key.
         """
-        if key == curses.KEY_F3:
+        # F1 / F2 (issue #78): mc parity. F1 opens the keybindings help
+        # dialog; F2 aliases F9's menu-dropdown toggle.
+        if key == curses.KEY_F1:
+            return Action.HELP
+        elif key == curses.KEY_F2:
+            return Action.MENU
+        elif key == curses.KEY_F3:
             return Action.VIEW
         elif key == curses.KEY_F4:
             return Action.EDIT
@@ -983,6 +992,10 @@ class App:
         self.menu.dropdown_open = not self.menu.dropdown_open
         if self.menu.dropdown_open:
             self.menu.selected_item = 0
+
+    def _show_help(self) -> None:
+        """F1: open the keybindings help modal (issue #78)."""
+        help_dialog(self.stdscr)
 
     def _toggle_mouse_swap(self) -> None:
         """Toggle mouse button swap (for left-handed users) and save to config."""

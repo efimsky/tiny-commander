@@ -34,11 +34,17 @@ class FunctionBar:
     - Label (e.g., "View") in black on cyan
     """
 
-    # Keys to display in order (tuple since immutable)
-    _DISPLAY_KEYS = ('F3', 'F4', 'F5', 'F6', 'F7', 'F8', 'F9', 'F10')
+    # Keys to display in order (tuple since immutable). Issue #78 added
+    # F1 (Help) and F2 (Menu) for mc parity; the bar now shows 10 buttons.
+    _DISPLAY_KEYS = (
+        'F1', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7', 'F8', 'F9', 'F10',
+    )
 
-    # Default labels for each function key
+    # Default labels for each function key. F2 and F9 share the 'Menu'
+    # label because they dispatch the same Action.MENU — see issue #78.
     _DEFAULT_LABELS = {
+        'F1': 'Help',
+        'F2': 'Menu',
         'F3': 'View',
         'F4': 'Edit',
         'F5': 'Copy',
@@ -127,8 +133,10 @@ class FunctionBar:
         # Clear the line first with label background
         safe_addstr(win, y, 0, ' ' * width, label_attr)
 
-        # Button definitions: (key, action)
+        # Button definitions: (key, action). Issue #78 added F1/F2.
         buttons = [
+            ('F1', Action.HELP),
+            ('F2', Action.MENU),
             ('F3', Action.VIEW),
             ('F4', Action.EDIT),
             ('F5', Action.COPY),

@@ -45,8 +45,8 @@ class TestFunctionBarPositionTracking(unittest.TestCase):
 
         bar.render(mock_win, y=23, width=80)
 
-        # Should have positions for all 8 buttons (F3-F10 including F9)
-        self.assertEqual(len(bar.button_positions), 8)
+        # Issue #78 added F1 Help and F2 Menu, so the bar now shows 10 buttons.
+        self.assertEqual(len(bar.button_positions), 10)
 
     def test_button_positions_have_correct_structure(self):
         """Each button position should be (start_x, end_x, action)."""
@@ -71,14 +71,24 @@ class TestFunctionBarPositionTracking(unittest.TestCase):
         bar.render(mock_win, y=23, width=80)
 
         actions = [pos[2] for pos in bar.button_positions]
+        self.assertIn(Action.HELP, actions)  # F1, issue #78
+        self.assertIn(Action.MENU, actions)  # F2 / F9, issue #78
         self.assertIn(Action.VIEW, actions)
         self.assertIn(Action.EDIT, actions)
         self.assertIn(Action.COPY, actions)
         self.assertIn(Action.MOVE, actions)
         self.assertIn(Action.MKDIR, actions)
         self.assertIn(Action.DELETE, actions)
-        self.assertIn(Action.MENU, actions)
         self.assertIn(Action.QUIT, actions)
+
+    def test_button_positions_first_two_cells_are_f1_help_and_f2_menu(self):
+        """Issue #78: F1 (Help) is at cell 0, F2 (Menu) is at cell 1."""
+        bar = FunctionBar()
+        mock_win = mock.MagicMock()
+        bar.render(mock_win, y=23, width=80)
+
+        self.assertEqual(bar.button_positions[0][2], Action.HELP)
+        self.assertEqual(bar.button_positions[1][2], Action.MENU)
 
     def test_render_clears_previous_positions(self):
         """render() should clear previous button_positions."""
@@ -144,21 +154,20 @@ class TestFunctionBarActionAtPoint(unittest.TestCase):
         mock_win = mock.MagicMock()
         bar.render(mock_win, y=23, width=80)
 
-        # With 8 buttons and width=80, cell_width = 10
-        # First button (F3 View) should be at x=0-9
+        # Issue #78: 10 buttons at width=80, cell_width = 8.
+        # First button (F1 Help) covers x=0-7.
         result = bar.action_at_point(5)
         self.assertIsNotNone(result)
         self.assertIsInstance(result, Action)
 
-    def test_action_at_point_first_button_is_view(self):
-        """First button (F3) should return Action.VIEW."""
+    def test_action_at_point_first_button_is_help(self):
+        """First button (F1) should return Action.HELP after issue #78."""
         bar = FunctionBar()
         mock_win = mock.MagicMock()
         bar.render(mock_win, y=23, width=80)
 
-        # First button starts at x=0
         result = bar.action_at_point(0)
-        self.assertEqual(result, Action.VIEW)
+        self.assertEqual(result, Action.HELP)
 
     def test_action_at_point_last_button_is_quit(self):
         """Last button (F10) should return Action.QUIT."""
@@ -166,9 +175,8 @@ class TestFunctionBarActionAtPoint(unittest.TestCase):
         mock_win = mock.MagicMock()
         bar.render(mock_win, y=23, width=80)
 
-        # With 8 buttons and width=80, cell_width = 10
-        # Last button (F10 Quit) at position 7, starts at x=70
-        result = bar.action_at_point(70)
+        # Issue #78: F10 is 10th button (index 9), at x = 9 * 8 = 72.
+        result = bar.action_at_point(72)
         self.assertEqual(result, Action.QUIT)
 
     def test_action_at_point_returns_none_past_buttons(self):
@@ -187,8 +195,8 @@ class TestFunctionBarActionAtPoint(unittest.TestCase):
         mock_win = mock.MagicMock()
         bar.render(mock_win, y=23, width=80)
 
-        # F9 is 7th button (index 6), at x = 6 * 10 = 60
-        result = bar.action_at_point(60)
+        # Issue #78: F9 is 9th button (index 8), at x = 8 * 8 = 64.
+        result = bar.action_at_point(64)
         self.assertEqual(result, Action.MENU)
 
 
@@ -205,11 +213,11 @@ class TestAppHandleMouseFunctionBar(unittest.TestCase):
         app.setup()
         app.draw()
 
-        # Function bar is at last row (y=23)
-        # F3 (View) is first button
+        # Function bar is at last row (y=23). Issue #78: F1 (Help) is the
+        # first button at cell [0, 8).
         result = app.handle_mouse(5, 23, curses.BUTTON1_CLICKED)
 
-        self.assertEqual(result, Action.VIEW)
+        self.assertEqual(result, Action.HELP)
 
     @mock.patch('curses.has_colors', return_value=False)
     @mock.patch('curses.curs_set')
@@ -221,8 +229,8 @@ class TestAppHandleMouseFunctionBar(unittest.TestCase):
         app.setup()
         app.draw()
 
-        # F5 is 3rd button (index 2), at x = 2 * 10 = 20
-        result = app.handle_mouse(25, 23, curses.BUTTON1_CLICKED)
+        # Issue #78: F5 is 5th button (index 4), at x = 4 * 8 = 32.
+        result = app.handle_mouse(33, 23, curses.BUTTON1_CLICKED)
 
         self.assertEqual(result, Action.COPY)
 
@@ -236,7 +244,7 @@ class TestAppHandleMouseFunctionBar(unittest.TestCase):
         app.setup()
         app.draw()
 
-        # F10 is last button (index 7), at x = 7 * 10 = 70
+        # Issue #78: F10 is last button (index 9), at x = 9 * 8 = 72.
         result = app.handle_mouse(75, 23, curses.BUTTON1_CLICKED)
 
         self.assertEqual(result, Action.QUIT)
@@ -251,7 +259,7 @@ class TestAppHandleMouseFunctionBar(unittest.TestCase):
         app.setup()
         app.draw()
 
-        # F9 is 7th button (index 6), at x = 6 * 10 = 60
+        # Issue #78: F9 is 9th button (index 8), at x = 8 * 8 = 64.
         result = app.handle_mouse(65, 23, curses.BUTTON1_CLICKED)
 
         self.assertEqual(result, Action.MENU)
@@ -354,38 +362,26 @@ class TestFunctionBarLabelCentering(unittest.TestCase):
         # spans the full width). Keep only key/label render calls.
         return [(x, t) for (x, t) in calls if not (x == 0 and len(t) == width)]
 
-    def test_label_rendered_centered_within_cell_at_width_80(self):
-        """At width=80 (cell_width=10), F7's ' F7Mkdir' (8 chars) should
-        render centered at x = 40 + (10-8)//2 = 41, not at x = 40."""
-        bar = FunctionBar()
-        calls = self._capture_addstr_calls(bar, width=80)
-
-        # Find the call that wrote ' F7' (the F7 key portion).
-        f7_calls = [(x, t) for (x, t) in calls if t == ' F7']
-        self.assertEqual(len(f7_calls), 1, f'expected 1 ` F7` render, got {f7_calls}')
-        x, _ = f7_calls[0]
-        # Cell is [40, 50). Label ' F7Mkdir' is 8 chars. Centered: 40 + 1 = 41.
-        self.assertEqual(x, 41, f'F7 key should render at x=41 (centered), got x={x}')
-
     def test_label_rendered_centered_within_cell_at_width_145(self):
-        """At width=145 (cell_width=18), F8's ' F8Delete' (9 chars) should
-        render centered at x = 90 + (18-9)//2 = 94, not at x = 90."""
+        """At width=145 (10 buttons after #78, cell_width=14), F7's
+        ' F7Mkdir' (8 chars) should render centered at x = 6*14 + (14-8)//2
+        = 84 + 3 = 87, not at the cell start x=84."""
         bar = FunctionBar()
         calls = self._capture_addstr_calls(bar, width=145)
 
-        f8_calls = [(x, t) for (x, t) in calls if t == ' F8']
-        self.assertEqual(len(f8_calls), 1)
-        x, _ = f8_calls[0]
-        # Cell is [90, 108). Label ' F8Delete' is 9 chars. Centered: 90 + 4 = 94.
-        self.assertEqual(x, 94, f'F8 key should render at x=94 (centered), got x={x}')
+        f7_calls = [(x, t) for (x, t) in calls if t == ' F7']
+        self.assertEqual(len(f7_calls), 1)
+        x, _ = f7_calls[0]
+        # F7 is index 6 in the 10-button bar. Cell [84, 98). Label is 8 chars.
+        self.assertEqual(x, 87, f'F7 key should render at x=87 (centered), got x={x}')
 
     def test_narrow_cell_clamps_label_to_cell_start(self):
         """When the label is wider than the cell, the centering offset
         would go negative. The clamp `max(0, ...)` must keep the label
         starting at start_x, never to the left of it."""
         bar = FunctionBar()
-        calls = self._capture_addstr_calls(bar, width=24)
-        # cell_width = 24 // 8 = 3. Every label is wider than 3.
+        # 10 buttons at width=30 → cell_width=3. Every label is wider than 3.
+        calls = self._capture_addstr_calls(bar, width=30)
         # Each ' F<N>' key render must land at i*3 (no negative shift).
         key_calls = [(x, t) for (x, t) in calls if t.startswith(' F')]
         for i, (x, t) in enumerate(key_calls):
@@ -398,38 +394,36 @@ class TestFunctionBarLabelCentering(unittest.TestCase):
     def test_button_positions_unchanged_by_centering(self):
         """The centering change must NOT alter the click-region table
         (button_positions). Existing keybinding/click logic depends on
-        the same boundaries."""
+        the same boundaries. Issue #78 made the bar 10 buttons wide."""
         bar = FunctionBar()
         mock_win = mock.MagicMock()
         bar.render(mock_win, y=23, width=80)
 
+        # Width=80 → cell_width=8. 10 buttons.
         expected = [
-            (0, 10, Action.VIEW),
-            (10, 20, Action.EDIT),
-            (20, 30, Action.COPY),
-            (30, 40, Action.MOVE),
-            (40, 50, Action.MKDIR),
-            (50, 60, Action.DELETE),
-            (60, 70, Action.MENU),
-            (70, 80, Action.QUIT),
+            (0, 8, Action.HELP),
+            (8, 16, Action.MENU),
+            (16, 24, Action.VIEW),
+            (24, 32, Action.EDIT),
+            (32, 40, Action.COPY),
+            (40, 48, Action.MOVE),
+            (48, 56, Action.MKDIR),
+            (56, 64, Action.DELETE),
+            (64, 72, Action.MENU),
+            (72, 80, Action.QUIT),
         ]
         self.assertEqual(bar.button_positions, expected)
 
-    def test_padding_click_visually_adjacent_to_next_label_resolves_to_next(self):
-        """Issue #18 user-facing assertion: at width=80, after centering
-        the F8 label sits at chars 51-59 with one char of left padding
-        at 50. A click at x=50 (visible left edge of F8 region, in F8
-        cell) returns DELETE. Clicks at 49 still return MKDIR (in F7
-        cell), which is correct because x=49 is now visually closer to
-        F7's centered label than to F8's."""
+    def test_click_in_f8_cell_returns_delete(self):
+        """Issue #18 / #78: at width=80, F8 cell is [56, 64). Click in
+        the middle of the cell (x=60) returns Action.DELETE."""
         bar = FunctionBar()
         mock_win = mock.MagicMock()
         bar.render(mock_win, y=23, width=80)
 
-        # Click on F8's left padding (still inside F8 cell [50, 60)):
-        self.assertEqual(bar.action_at_point(50), Action.DELETE)
-        # Click on visible F8 label center:
-        self.assertEqual(bar.action_at_point(55), Action.DELETE)
+        self.assertEqual(bar.action_at_point(56), Action.DELETE)
+        self.assertEqual(bar.action_at_point(60), Action.DELETE)
+        self.assertEqual(bar.action_at_point(63), Action.DELETE)
 
 
 if __name__ == '__main__':
