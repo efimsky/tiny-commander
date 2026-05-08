@@ -45,60 +45,60 @@ class StatusBar:
             self._render_line(win, y, width, content)
             return
 
-        # Get current entry info (wrap in try-except for graceful handling)
-        try:
-            if panel.entries and panel.cursor < len(panel.entries):
-                entry = panel.entries[panel.cursor]
-                name = entry.name
+        # Snapshot the panel's mutable state once. Curses apps are
+        # single-threaded so there is no real concurrent mutation, but
+        # taking a snapshot here keeps the rest of this method tolerant
+        # of any future weirdness without having to swallow programming
+        # errors like AttributeError or IndexError.
+        entries = panel.entries
+        cursor = panel.cursor
+        if entries and 0 <= cursor < len(entries):
+            entry = entries[cursor]
+            name = entry.name
 
-                # Get file info (handle '..' specially)
-                if name != '..':
-                    try:
-                        file_path = panel.path / name
-                        stat_info = file_path.lstat()
-                        # Check for cached directory size first (use lstat mode, not is_dir)
-                        is_directory = stat.S_ISDIR(stat_info.st_mode)
-                        if is_directory:
-                            cached_size = panel.get_cached_dir_size(name)
-                            if cached_size is not None:
-                                size_str = f'Dir: {format_size(cached_size)}'
-                            else:
-                                size_str = ''
+            # Get file info (handle '..' specially)
+            if name != '..':
+                try:
+                    file_path = panel.path / name
+                    stat_info = file_path.lstat()
+                    # Check for cached directory size first (use lstat mode, not is_dir)
+                    is_directory = stat.S_ISDIR(stat_info.st_mode)
+                    if is_directory:
+                        cached_size = panel.get_cached_dir_size(name)
+                        if cached_size is not None:
+                            size_str = f'Dir: {format_size(cached_size)}'
                         else:
-                            size_str = format_size(stat_info.st_size)
-                        perms_str = format_permissions(stat_info.st_mode)
-                        mtime_str = format_mtime(stat_info.st_mtime)
-                    except OSError:
-                        size_str = '?'
-                        perms_str = '??????????'
-                        mtime_str = '????????????'  # 12 chars to match format_mtime
-                else:
-                    size_str = ''
-                    perms_str = ''
-                    mtime_str = ''
+                            size_str = ''
+                    else:
+                        size_str = format_size(stat_info.st_size)
+                    perms_str = format_permissions(stat_info.st_mode)
+                    mtime_str = format_mtime(stat_info.st_mtime)
+                except OSError:
+                    size_str = '?'
+                    perms_str = '??????????'
+                    mtime_str = '????????????'  # 12 chars to match format_mtime
+            else:
+                size_str = ''
+                perms_str = ''
+                mtime_str = ''
 
-                # Truncate name if needed (ensure minimum 10 chars on narrow terminals)
-                max_name_len = max(10, width - 50)
-                if len(name) > max_name_len:
-                    name = name[:max_name_len - 3] + '...'
+            # Truncate name if needed (ensure minimum 10 chars on narrow terminals)
+            max_name_len = max(10, width - 50)
+            if len(name) > max_name_len:
+                name = name[:max_name_len - 3] + '...'
 
-                parts.append(name)
-                if size_str:
-                    parts.append(size_str)
-                if perms_str:
-                    parts.append(perms_str)
-                # Show mtime only on wide terminals (>= 70 chars)
-                if mtime_str and width >= 70:
-                    parts.append(mtime_str)
+            parts.append(name)
+            if size_str:
+                parts.append(size_str)
+            if perms_str:
+                parts.append(perms_str)
+            # Show mtime only on wide terminals (>= 70 chars)
+            if mtime_str and width >= 70:
+                parts.append(mtime_str)
 
-                # Position indicator
-                position = self._format_position(panel.cursor, len(panel.entries))
-                parts.append(position)
-        except (IndexError, AttributeError):
-            # Guard against race conditions: panel.entries or panel.cursor may change
-            # between the bounds check and actual access if panel.refresh() is called
-            # from another context (e.g., file operation completing)
-            pass
+            # Position indicator
+            position = self._format_position(cursor, len(entries))
+            parts.append(position)
 
         # Selection count (only if files are selected)
         if panel.selected:
