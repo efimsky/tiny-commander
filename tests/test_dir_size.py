@@ -207,5 +207,78 @@ class TestMeasureDirSizeNarrowTerminal(unittest.TestCase):
                 app._measure_dir_size()
 
 
+class TestDirSizeCacheInvalidation(unittest.TestCase):
+    """Issue #46: dir-size cache must invalidate when the measured
+    directory's mtime advances, otherwise F5/F6/F8 against the dir
+    leave stale numbers on screen indefinitely."""
+
+    def setUp(self) -> None:
+        from tnc.panel import Panel
+        self._panel_cls = Panel
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp_dir.name)
+        self.measured = self.root / 'measured'
+        self.measured.mkdir()
+        (self.measured / 'a.txt').write_text('hello')  # 5 bytes
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def _make_panel(self):
+        return self._panel_cls(str(self.root), width=80, height=20)
+
+    def _bump_mtime(self, path: Path) -> None:
+        """Force mtime to advance past the cached value, regardless of
+        filesystem timestamp resolution. Tests that rely on a real op
+        bumping mtime can be flaky on coarse-resolution filesystems
+        (HFS+, some network mounts), so we set it explicitly."""
+        st = path.stat()
+        os.utime(path, (st.st_atime, st.st_mtime + 1.0))
+
+    def test_get_cached_returns_size_when_mtime_unchanged(self) -> None:
+        panel = self._make_panel()
+        size = panel.measure_dir_size('measured')
+        self.assertGreaterEqual(size, 0)
+        # Same mtime — cache hit.
+        self.assertEqual(panel.get_cached_dir_size('measured'), size)
+
+    def test_get_cached_returns_none_after_file_added_to_dir(self) -> None:
+        """Regression test for issue #46: F5 into a measured dir."""
+        panel = self._make_panel()
+        panel.measure_dir_size('measured')
+        # Simulate a file being copied/moved into the measured dir.
+        (self.measured / 'b.txt').write_text('world')
+        self._bump_mtime(self.measured)
+        self.assertIsNone(panel.get_cached_dir_size('measured'))
+
+    def test_get_cached_returns_none_after_file_removed_from_dir(self) -> None:
+        """Regression test for issue #46: F8 inside a measured dir."""
+        panel = self._make_panel()
+        panel.measure_dir_size('measured')
+        (self.measured / 'a.txt').unlink()
+        self._bump_mtime(self.measured)
+        self.assertIsNone(panel.get_cached_dir_size('measured'))
+
+    def test_get_cached_returns_none_when_dir_deleted(self) -> None:
+        import shutil
+        panel = self._make_panel()
+        panel.measure_dir_size('measured')
+        shutil.rmtree(self.measured)
+        self.assertIsNone(panel.get_cached_dir_size('measured'))
+        # Stale entry should have been dropped from the internal cache.
+        resolved = (self.root / 'measured').resolve()
+        self.assertNotIn(resolved, panel._dir_size_cache)
+
+    def test_measure_dir_size_records_mtime_in_cache(self) -> None:
+        panel = self._make_panel()
+        size = panel.measure_dir_size('measured')
+        resolved = self.measured.resolve()
+        entry = panel._dir_size_cache.get(resolved)
+        self.assertIsNotNone(entry)
+        cached_size, cached_mtime = entry
+        self.assertEqual(cached_size, size)
+        self.assertAlmostEqual(cached_mtime, self.measured.stat().st_mtime, places=6)
+
+
 if __name__ == '__main__':
     unittest.main()
