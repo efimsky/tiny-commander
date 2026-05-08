@@ -113,6 +113,21 @@ class TestSortCycle(unittest.TestCase):
 
         self.assertEqual(orders, expected_cycle)
 
+    def test_sort_by_rejects_invalid_order(self) -> None:
+        """sort_by must reject unknown sort orders rather than silently storing them (issue #35)."""
+        panel = Panel(str(self.test_path), width=40, height=10)
+        with self.assertRaises(ValueError):
+            panel.sort_by('color')
+
+    def test_cycle_sort_does_not_swallow_corrupt_state(self) -> None:
+        """A corrupted sort_order must surface as ValueError, not silently reset (issue #35)."""
+        panel = Panel(str(self.test_path), width=40, height=10)
+        # Bypass the validating setter to simulate a future bug or stale state.
+        panel.__dict__['sort_order'] = 'bogus'
+
+        with self.assertRaises(ValueError):
+            panel.cycle_sort()
+
 
 if __name__ == '__main__':
     unittest.main()

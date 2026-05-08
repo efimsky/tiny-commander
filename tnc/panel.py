@@ -539,6 +539,8 @@ class Panel:
             return (name.rsplit('.', 1)[1], name)
         return ('', name)
 
+    VALID_SORT_ORDERS: tuple[str, ...] = ('name', 'size', 'date', 'extension')
+
     def sort_by(self, order: str) -> None:
         """Change the sort order and refresh the panel.
 
@@ -547,7 +549,14 @@ class Panel:
 
         Args:
             order: Sort order ('name', 'size', 'date', 'extension').
+
+        Raises:
+            ValueError: If `order` is not one of the supported orders.
         """
+        if order not in self.VALID_SORT_ORDERS:
+            raise ValueError(
+                f'Invalid sort order: {order!r} (expected one of {self.VALID_SORT_ORDERS})'
+            )
         if self.sort_order == order:
             self.sort_reversed = not self.sort_reversed
         else:
@@ -561,14 +570,17 @@ class Panel:
         self.refresh()
 
     def cycle_sort(self) -> None:
-        """Cycle through sort orders: name -> size -> date -> extension -> name."""
-        cycle = ['name', 'size', 'date', 'extension']
-        try:
-            current_index = cycle.index(self.sort_order)
-            next_index = (current_index + 1) % len(cycle)
-        except ValueError:
-            # If current sort order is not in cycle, reset to name
-            next_index = 0
+        """Cycle through sort orders: name -> size -> date -> extension -> name.
+
+        Raises:
+            ValueError: If `self.sort_order` has been corrupted to a value
+                outside `VALID_SORT_ORDERS`. The previous behavior of
+                silently resetting to 'name' hid the underlying bug from
+                the user (sort jumped inexplicably) and from us.
+        """
+        cycle = self.VALID_SORT_ORDERS
+        current_index = cycle.index(self.sort_order)
+        next_index = (current_index + 1) % len(cycle)
         self.sort_by(cycle[next_index])
 
     def toggle_hidden(self) -> None:
