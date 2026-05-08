@@ -871,11 +871,22 @@ def _process_files_with_overwrite(
                 )
                 continue
 
+            # Broken symlink at dest: there is no real data to lose, so
+            # just unlink it and fall through. Without this the conflict
+            # branch below would call dest_path.stat() and raise OSError,
+            # which the caller saw as a confusing "Permission denied".
+            if dest_path.is_symlink() and not dest_path.exists():
+                try:
+                    dest_path.unlink()
+                except OSError as err:
+                    errors.append(f'{filename}: {err}')
+                    continue
+
             # Check for conflict
             if dest_path.exists() or dest_path.is_symlink():
-                # Refuse mismatched types: file vs. directory. The overwrite
-                # dialog only describes file metadata, so a "Yes" there would
-                # silently delete a whole directory tree.
+                # Refuse mismatched types: file vs. directory. The
+                # overwrite dialog only describes file metadata, so a
+                # "Yes" there would silently delete a whole tree.
                 mismatch = _type_mismatch_error(source_path, dest_path, operation_name)
                 if mismatch is not None:
                     errors.append(f'{filename}: {mismatch}')
