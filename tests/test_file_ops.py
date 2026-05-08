@@ -368,6 +368,42 @@ class TestRenameFile(unittest.TestCase):
             self.assertFalse(result.success)
             self.assertIn('separator', result.error.lower())
 
+    def test_case_only_rename_allowed_when_paths_are_same_inode(self):
+        """On case-insensitive FSes (APFS, NTFS), Foo.txt and foo.txt resolve to the same inode.
+
+        We simulate that by making Path.samefile return True for the new path.
+        The pre-fix behavior treats it as "Destination already exists".
+        """
+        from unittest import mock
+        from tnc.file_ops import rename_file
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            src = Path(tmpdir, 'Foo.txt')
+            src.touch()
+
+            # On a real case-insensitive FS, both Foo.txt and foo.txt would
+            # resolve to the same file. Simulate by patching samefile.
+            real_samefile = Path.samefile
+
+            def case_insensitive_samefile(self_path, other_path):
+                # If names differ only by case in the same parent, treat as same.
+                a = Path(self_path)
+                b = Path(other_path)
+                if a.parent == b.parent and a.name.lower() == b.name.lower():
+                    return True
+                return real_samefile(self_path, other_path)
+
+            with mock.patch.object(Path, 'exists', return_value=True), \
+                 mock.patch.object(Path, 'samefile', case_insensitive_samefile), \
+                 mock.patch.object(Path, 'rename') as mock_rename:
+                result = rename_file(tmpdir, 'Foo.txt', 'foo.txt')
+
+            self.assertTrue(
+                result.success,
+                f'Case-only rename should succeed on case-insensitive FS, got: {result.error!r}'
+            )
+            mock_rename.assert_called_once()
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -1036,9 +1036,18 @@ def rename_file(parent_dir: str | Path, old_name: str, new_name: str) -> RenameR
     if not old_path.exists() and not old_path.is_symlink():
         return RenameResult(success=False, error='Source does not exist')
 
-    # Check if destination already exists
+    # Check if destination already exists. Skip the check when both paths
+    # resolve to the same inode — that's a case-only rename on a
+    # case-insensitive filesystem (APFS by default, NTFS), where
+    # exists()/is_symlink() return True for the new path even though
+    # there is no separate destination.
     if new_path.exists() or new_path.is_symlink():
-        return RenameResult(success=False, error='Destination already exists')
+        try:
+            same_inode = old_path.samefile(new_path)
+        except OSError:
+            same_inode = False
+        if not same_inode:
+            return RenameResult(success=False, error='Destination already exists')
 
     try:
         old_path.rename(new_path)
