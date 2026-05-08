@@ -108,49 +108,63 @@ class ColorManager:
         else:
             self._apply_modern_theme()
 
+    @staticmethod
+    def _safe_init_pair(pair: int, fg: int, bg: int) -> None:
+        """init_pair that tolerates terminals with limited color-pair support.
+
+        On 8-color xterms or other constrained terminals, init_pair can
+        raise curses.error part way through the theme. Catching here
+        leaves the affected pair at its default (monochrome) and lets
+        the rest of the theme apply, instead of crashing startup (#40).
+        """
+        try:
+            curses.init_pair(pair, fg, bg)
+        except curses.error:
+            pass
+
     def _apply_classic_theme(self) -> None:
         """Apply classic mc-style colors with blue panel backgrounds."""
-        curses.init_pair(PAIR_PANEL, curses.COLOR_WHITE, curses.COLOR_BLUE)
-        curses.init_pair(PAIR_DIRECTORY, curses.COLOR_WHITE, curses.COLOR_BLUE)
-        curses.init_pair(PAIR_SELECTED, curses.COLOR_YELLOW, curses.COLOR_BLUE)
-        curses.init_pair(PAIR_EXECUTABLE, curses.COLOR_GREEN, curses.COLOR_BLUE)
-        curses.init_pair(PAIR_SYMLINK, curses.COLOR_MAGENTA, curses.COLOR_BLUE)
-        curses.init_pair(PAIR_BROKEN_LINK, curses.COLOR_RED, curses.COLOR_BLUE)
-        curses.init_pair(PAIR_HIDDEN, curses.COLOR_CYAN, curses.COLOR_BLUE)
-        curses.init_pair(PAIR_CURSOR, curses.COLOR_BLACK, curses.COLOR_CYAN)
-        curses.init_pair(PAIR_CURSOR_SELECTED, curses.COLOR_YELLOW, curses.COLOR_CYAN)
-        curses.init_pair(PAIR_MENU_BAR, curses.COLOR_WHITE, curses.COLOR_CYAN)
-        curses.init_pair(PAIR_MENU_SELECTED, curses.COLOR_WHITE, curses.COLOR_BLACK)
-        curses.init_pair(PAIR_DROPDOWN, curses.COLOR_WHITE, curses.COLOR_CYAN)
-        curses.init_pair(PAIR_DROPDOWN_SELECTED, curses.COLOR_WHITE, curses.COLOR_BLACK)
-        curses.init_pair(PAIR_FKEY, curses.COLOR_WHITE, curses.COLOR_BLACK)
-        curses.init_pair(PAIR_FKEY_LABEL, curses.COLOR_BLACK, curses.COLOR_CYAN)
-        curses.init_pair(PAIR_STATUS, curses.COLOR_WHITE, curses.COLOR_BLUE)
-        curses.init_pair(PAIR_CMDLINE, -1, -1)
-        curses.init_pair(PAIR_DIALOG, curses.COLOR_BLACK, curses.COLOR_WHITE)
-        curses.init_pair(PAIR_DIALOG_TITLE, curses.COLOR_WHITE, curses.COLOR_BLUE)
+        self._safe_init_pair(PAIR_PANEL, curses.COLOR_WHITE, curses.COLOR_BLUE)
+        self._safe_init_pair(PAIR_DIRECTORY, curses.COLOR_WHITE, curses.COLOR_BLUE)
+        self._safe_init_pair(PAIR_SELECTED, curses.COLOR_YELLOW, curses.COLOR_BLUE)
+        self._safe_init_pair(PAIR_EXECUTABLE, curses.COLOR_GREEN, curses.COLOR_BLUE)
+        self._safe_init_pair(PAIR_SYMLINK, curses.COLOR_MAGENTA, curses.COLOR_BLUE)
+        self._safe_init_pair(PAIR_BROKEN_LINK, curses.COLOR_RED, curses.COLOR_BLUE)
+        self._safe_init_pair(PAIR_HIDDEN, curses.COLOR_CYAN, curses.COLOR_BLUE)
+        self._safe_init_pair(PAIR_CURSOR, curses.COLOR_BLACK, curses.COLOR_CYAN)
+        self._safe_init_pair(PAIR_CURSOR_SELECTED, curses.COLOR_YELLOW, curses.COLOR_CYAN)
+        self._safe_init_pair(PAIR_MENU_BAR, curses.COLOR_WHITE, curses.COLOR_CYAN)
+        self._safe_init_pair(PAIR_MENU_SELECTED, curses.COLOR_WHITE, curses.COLOR_BLACK)
+        self._safe_init_pair(PAIR_DROPDOWN, curses.COLOR_WHITE, curses.COLOR_CYAN)
+        self._safe_init_pair(PAIR_DROPDOWN_SELECTED, curses.COLOR_WHITE, curses.COLOR_BLACK)
+        self._safe_init_pair(PAIR_FKEY, curses.COLOR_WHITE, curses.COLOR_BLACK)
+        self._safe_init_pair(PAIR_FKEY_LABEL, curses.COLOR_BLACK, curses.COLOR_CYAN)
+        self._safe_init_pair(PAIR_STATUS, curses.COLOR_WHITE, curses.COLOR_BLUE)
+        self._safe_init_pair(PAIR_CMDLINE, -1, -1)
+        self._safe_init_pair(PAIR_DIALOG, curses.COLOR_BLACK, curses.COLOR_WHITE)
+        self._safe_init_pair(PAIR_DIALOG_TITLE, curses.COLOR_WHITE, curses.COLOR_BLUE)
 
     def _apply_modern_theme(self) -> None:
         """Apply modern colors with transparent/default background."""
-        curses.init_pair(PAIR_PANEL, -1, -1)
-        curses.init_pair(PAIR_DIRECTORY, curses.COLOR_BLUE, -1)
-        curses.init_pair(PAIR_SELECTED, curses.COLOR_YELLOW, -1)
-        curses.init_pair(PAIR_EXECUTABLE, curses.COLOR_GREEN, -1)
-        curses.init_pair(PAIR_SYMLINK, curses.COLOR_MAGENTA, -1)
-        curses.init_pair(PAIR_BROKEN_LINK, curses.COLOR_RED, -1)
-        curses.init_pair(PAIR_HIDDEN, curses.COLOR_CYAN, -1)
-        curses.init_pair(PAIR_CURSOR, curses.COLOR_WHITE, curses.COLOR_CYAN)
-        curses.init_pair(PAIR_CURSOR_SELECTED, curses.COLOR_YELLOW, curses.COLOR_CYAN)
-        curses.init_pair(PAIR_MENU_BAR, curses.COLOR_WHITE, curses.COLOR_CYAN)
-        curses.init_pair(PAIR_MENU_SELECTED, curses.COLOR_WHITE, curses.COLOR_BLACK)
-        curses.init_pair(PAIR_DROPDOWN, curses.COLOR_WHITE, curses.COLOR_CYAN)
-        curses.init_pair(PAIR_DROPDOWN_SELECTED, curses.COLOR_WHITE, curses.COLOR_BLACK)
-        curses.init_pair(PAIR_FKEY, curses.COLOR_WHITE, curses.COLOR_BLACK)
-        curses.init_pair(PAIR_FKEY_LABEL, curses.COLOR_BLACK, curses.COLOR_CYAN)
-        curses.init_pair(PAIR_STATUS, -1, -1)
-        curses.init_pair(PAIR_CMDLINE, -1, -1)
-        curses.init_pair(PAIR_DIALOG, curses.COLOR_BLACK, curses.COLOR_WHITE)
-        curses.init_pair(PAIR_DIALOG_TITLE, curses.COLOR_WHITE, curses.COLOR_BLUE)
+        self._safe_init_pair(PAIR_PANEL, -1, -1)
+        self._safe_init_pair(PAIR_DIRECTORY, curses.COLOR_BLUE, -1)
+        self._safe_init_pair(PAIR_SELECTED, curses.COLOR_YELLOW, -1)
+        self._safe_init_pair(PAIR_EXECUTABLE, curses.COLOR_GREEN, -1)
+        self._safe_init_pair(PAIR_SYMLINK, curses.COLOR_MAGENTA, -1)
+        self._safe_init_pair(PAIR_BROKEN_LINK, curses.COLOR_RED, -1)
+        self._safe_init_pair(PAIR_HIDDEN, curses.COLOR_CYAN, -1)
+        self._safe_init_pair(PAIR_CURSOR, curses.COLOR_WHITE, curses.COLOR_CYAN)
+        self._safe_init_pair(PAIR_CURSOR_SELECTED, curses.COLOR_YELLOW, curses.COLOR_CYAN)
+        self._safe_init_pair(PAIR_MENU_BAR, curses.COLOR_WHITE, curses.COLOR_CYAN)
+        self._safe_init_pair(PAIR_MENU_SELECTED, curses.COLOR_WHITE, curses.COLOR_BLACK)
+        self._safe_init_pair(PAIR_DROPDOWN, curses.COLOR_WHITE, curses.COLOR_CYAN)
+        self._safe_init_pair(PAIR_DROPDOWN_SELECTED, curses.COLOR_WHITE, curses.COLOR_BLACK)
+        self._safe_init_pair(PAIR_FKEY, curses.COLOR_WHITE, curses.COLOR_BLACK)
+        self._safe_init_pair(PAIR_FKEY_LABEL, curses.COLOR_BLACK, curses.COLOR_CYAN)
+        self._safe_init_pair(PAIR_STATUS, -1, -1)
+        self._safe_init_pair(PAIR_CMDLINE, -1, -1)
+        self._safe_init_pair(PAIR_DIALOG, curses.COLOR_BLACK, curses.COLOR_WHITE)
+        self._safe_init_pair(PAIR_DIALOG_TITLE, curses.COLOR_WHITE, curses.COLOR_BLUE)
 
     def get_attr(self, pair: int, bold: bool = False, reverse: bool = False) -> int:
         """Get curses attribute for a color pair with optional modifiers.
