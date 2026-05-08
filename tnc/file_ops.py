@@ -564,8 +564,14 @@ def move_files(
         MoveResult with success status and any error message.
     """
     def move_item(source_path: Path, dest_path: Path) -> None:
-        # shutil.move handles cross-filesystem moves (falls back to copy+delete)
+        # shutil.move handles cross-filesystem moves by copy+delete. On
+        # weird mounts the unlink can silently leave the source in place
+        # — verify post-condition and raise so the user is told.
         shutil.move(str(source_path), str(dest_path))
+        if source_path.exists() or source_path.is_symlink():
+            raise OSError(
+                f'Moved to destination but original could not be deleted: {source_path}'
+            )
 
     return _process_file_operation(
         filenames,
@@ -1010,6 +1016,10 @@ def move_files_with_overwrite(
     """
     def move_item(source_path: Path, dest_path: Path) -> None:
         shutil.move(str(source_path), str(dest_path))
+        if source_path.exists() or source_path.is_symlink():
+            raise OSError(
+                f'Moved to destination but original could not be deleted: {source_path}'
+            )
 
     return _process_files_with_overwrite(
         filenames, source_dir, dest_dir, handler,

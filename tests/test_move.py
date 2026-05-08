@@ -248,5 +248,39 @@ class TestMoveErrorDisplay(unittest.TestCase):
                 self.assertIn('file.txt: Permission denied', call_kwargs['errors'])
 
 
+class TestMoveSourceLeftover(unittest.TestCase):
+    """Detect when shutil.move says success but the source still exists (issue #37)."""
+
+    def test_move_reports_failure_when_source_still_exists_after_op(self):
+        """If a cross-device move copies dest but cannot delete source, report failure."""
+        import shutil as _shutil
+        from tnc import file_ops
+
+        with tempfile.TemporaryDirectory() as source_dir:
+            with tempfile.TemporaryDirectory() as dest_dir:
+                src = Path(source_dir, 'file.txt')
+                src.write_text('content')
+                dst = Path(dest_dir, 'file.txt')
+
+                # Simulate cross-device behavior: copy succeeds, source not deleted.
+                def fake_move(s, d):
+                    _shutil.copy2(s, d)
+                    # Deliberately do NOT unlink source
+
+                with mock.patch.object(file_ops.shutil, 'move', side_effect=fake_move):
+                    result = move_files(['file.txt'], source_dir, dest_dir)
+
+                self.assertFalse(
+                    result.success,
+                    'Move should report failure when the original could not be removed'
+                )
+                self.assertTrue(
+                    any('original' in e.lower() or 'source' in e.lower() for e in result.errors),
+                    f'Expected an error mentioning the leftover source, got: {result.errors!r}'
+                )
+                self.assertTrue(src.exists(), 'Source remains for the user to handle')
+                self.assertTrue(dst.exists(), 'Destination did receive the copy')
+
+
 if __name__ == '__main__':
     unittest.main()
