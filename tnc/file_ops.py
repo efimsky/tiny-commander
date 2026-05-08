@@ -174,6 +174,7 @@ class CopyResult:
     copied_files: list[str] = field(default_factory=list)
     skipped_files: list[str] = field(default_factory=list)
     cancelled: bool = False
+    errors: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -185,6 +186,7 @@ class MoveResult:
     moved_files: list[str] = field(default_factory=list)
     skipped_files: list[str] = field(default_factory=list)
     cancelled: bool = False
+    errors: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -212,6 +214,7 @@ class DeleteResult:
     success: bool
     error: str = ''
     deleted_files: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -230,6 +233,7 @@ class ChmodResult:
     success: bool
     error: str = ''
     changed_files: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -239,6 +243,7 @@ class ChownResult:
     success: bool
     error: str = ''
     changed_files: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
 
 
 def chmod_files(
@@ -279,7 +284,8 @@ def chmod_files(
         return ChmodResult(
             success=False,
             error='; '.join(errors),
-            changed_files=changed
+            changed_files=changed,
+            errors=list(errors),
         )
 
     return ChmodResult(success=True, changed_files=changed)
@@ -352,7 +358,8 @@ def chmod_recursive(
         return ChmodResult(
             success=False,
             error='; '.join(errors),
-            changed_files=changed
+            changed_files=changed,
+            errors=list(errors),
         )
 
     return ChmodResult(success=True, changed_files=changed)
@@ -398,7 +405,8 @@ def chown_files(
         return ChownResult(
             success=False,
             error='; '.join(errors),
-            changed_files=changed
+            changed_files=changed,
+            errors=list(errors),
         )
 
     return ChownResult(success=True, changed_files=changed)
@@ -508,6 +516,7 @@ def _process_file_operation(
         return result_class(
             success=False,
             error='; '.join(errors),
+            errors=list(errors),
             **{result_attr: processed}
         )
 
@@ -733,7 +742,8 @@ def delete_files(filenames: list[str], parent_dir: str | Path) -> DeleteResult:
         return DeleteResult(
             success=False,
             error='; '.join(errors),
-            deleted_files=deleted
+            deleted_files=deleted,
+            errors=list(errors),
         )
 
     return DeleteResult(success=True, deleted_files=deleted)
@@ -950,6 +960,7 @@ def _process_files_with_overwrite(
         return result_class(
             success=False,
             error='; '.join(errors),
+            errors=list(errors),
             skipped_files=skipped,
             **{result_attr: processed}
         )

@@ -205,6 +205,29 @@ class TestCopySymlink(unittest.TestCase):
 class TestCopyErrorHandling(unittest.TestCase):
     """Test error handling during copy."""
 
+    def test_errors_list_preserves_filenames_with_semicolon(self):
+        """Per-file errors with '; ' in the path must not be split (issue #33)."""
+        from tnc.file_ops import copy_files
+
+        with tempfile.TemporaryDirectory() as source_dir:
+            with tempfile.TemporaryDirectory() as dest_dir:
+                # Create two files; one has '; ' in its name
+                weird = 'a; b.txt'
+                Path(source_dir, weird).write_text('one')
+                Path(source_dir, 'normal.txt').write_text('two')
+                # Mark dest as read-only so copies fail
+                os.chmod(dest_dir, 0o500)
+                try:
+                    result = copy_files([weird, 'normal.txt'], source_dir, dest_dir)
+                finally:
+                    os.chmod(dest_dir, 0o755)
+
+                self.assertFalse(result.success)
+                # The list-based errors field must preserve filenames intact
+                self.assertEqual(len(result.errors), 2)
+                self.assertTrue(any(weird in e for e in result.errors),
+                    f'Expected weird filename in errors list, got: {result.errors!r}')
+
     def test_copy_to_same_directory_fails(self):
         """Copy to same directory should fail gracefully."""
         with tempfile.TemporaryDirectory() as tmpdir:
