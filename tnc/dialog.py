@@ -1598,10 +1598,15 @@ def chmod_dialog(
     return None
 
 
-class ChownDialog:
+class ChownDialog(Modal):
     """Dialog for changing file ownership.
 
     Displays text input fields for owner and group with autocomplete.
+
+    Issue #16: subclasses :class:`Modal` for mouse routing. Click on the
+    owner field, group field, OK, or Cancel does the obvious thing while
+    all existing keyboard navigation (Tab, arrows, Enter, Esc) is
+    preserved.
     """
 
     def __init__(
@@ -1625,6 +1630,7 @@ class ChownDialog:
         """
         from tnc.permissions import get_system_users, get_system_groups
 
+        super().__init__()
         self.file_count = file_count
         self.filename = filename
         self.owner_input = current_owner
@@ -1640,6 +1646,10 @@ class ChownDialog:
         self.cursor_pos = len(current_owner)
         self.autocomplete_index = -1  # -1 means no selection
         self.button_focus = 0  # 0=OK, 1=Cancel
+        # Click hit regions populated during render(); see ChmodDialog for the
+        # same pattern. Action ids used here:
+        #   'owner_field' | 'group_field' | 'ok' | 'cancel'.
+        self._click_targets: list[tuple[int, int, int, str]] = []
 
     def get_autocomplete_suggestions(self) -> list[str]:
         """Get autocomplete suggestions for current field."""
@@ -1654,6 +1664,10 @@ class ChownDialog:
     def handle_key(self, key: int) -> bool:
         """Handle a keypress.
 
+        Returns True when the dialog should close (back-compat with
+        existing tests). Also calls :meth:`Modal.set_result` so the
+        inherited :meth:`Modal.show` loop terminates correctly.
+
         Args:
             key: Key code from curses.
 
@@ -1665,6 +1679,7 @@ class ChownDialog:
         # Escape cancels
         if key == 27:
             self.cancelled = True
+            self.set_result(None)
             return True
 
         # Tab switches fields
@@ -1724,6 +1739,9 @@ class ChownDialog:
             elif self.active_field == 'buttons':
                 if self.button_focus == 1:  # Cancel
                     self.cancelled = True
+                    self.set_result(None)
+                else:
+                    self.set_result(self.get_result())
                 return True  # Close dialog
             else:
                 # Move to next field
@@ -1760,6 +1778,35 @@ class ChownDialog:
 
         return False
 
+    def handle_click(self, x: int, y: int, button_state: int) -> None:
+        """Click on a registered hit region: focus field or activate button (#16)."""
+        if not (button_state & curses.BUTTON1_CLICKED):
+            return
+        for x_start, x_end, target_y, action_id in self._click_targets:
+            if y == target_y and x_start <= x < x_end:
+                self._activate_action(action_id)
+                return
+
+    def _activate_action(self, action_id: str) -> None:
+        """Apply the side effect of clicking the given hit region."""
+        if action_id == 'ok':
+            self.set_result(self.get_result())
+            return
+        if action_id == 'cancel':
+            self.cancelled = True
+            self.set_result(None)
+            return
+        if action_id == 'owner_field':
+            self.active_field = 'owner'
+            self.cursor_pos = len(self.owner_input)
+            self.autocomplete_index = -1
+            return
+        if action_id == 'group_field':
+            self.active_field = 'group'
+            self.cursor_pos = len(self.group_input)
+            self.autocomplete_index = -1
+            return
+
     def get_result(self) -> tuple[str, str]:
         """Get current owner and group values."""
         return (self.owner_input, self.group_input)
@@ -1785,6 +1832,9 @@ class ChownDialog:
         dialog_attr = get_attr(PAIR_DIALOG)
         title_attr = get_attr(PAIR_DIALOG_TITLE)
 
+        # Reset click hit-regions; rebuild as we render.
+        self._click_targets.clear()
+
         # Draw border and title
         title = 'Change Ownership'
         top_border = '┌─ ' + title + ' ' + '─' * (width - len(title) - 5) + '┐'
@@ -1807,11 +1857,17 @@ class ChownDialog:
         self._draw_line(win, line_y, start_x, width, '', dialog_attr)
         line_y += 1
 
-        # Owner field
+        # Owner field. _draw_line prefixes '│ ' (2 chars) at start_x. The
+        # content '  Owner: [<input padded to 20>]' puts the bracketed
+        # field at offset 2(border)+2(pad)+7(label) = 11. The field span
+        # including brackets is 22 chars (1 + 20 + 1).
         owner_label = 'Owner: '
         owner_field = self.owner_input + ('_' if self.active_field == 'owner' else '')
         owner_line = f'  {owner_label}[{owner_field.ljust(20)}]'
         self._draw_line(win, line_y, start_x, width, owner_line, dialog_attr)
+        self._click_targets.append(
+            (start_x + 11, start_x + 33, line_y, 'owner_field')
+        )
         line_y += 1
 
         # Autocomplete for owner
@@ -1826,11 +1882,14 @@ class ChownDialog:
         self._draw_line(win, line_y, start_x, width, '', dialog_attr)
         line_y += 1
 
-        # Group field
+        # Group field — same geometry as Owner.
         group_label = 'Group: '
         group_field = self.group_input + ('_' if self.active_field == 'group' else '')
         group_line = f'  {group_label}[{group_field.ljust(20)}]'
         self._draw_line(win, line_y, start_x, width, group_line, dialog_attr)
+        self._click_targets.append(
+            (start_x + 11, start_x + 33, line_y, 'group_field')
+        )
         line_y += 1
 
         # Autocomplete for group
@@ -1854,11 +1913,19 @@ class ChownDialog:
         self._draw_line(win, line_y, start_x, width, '', dialog_attr)
         line_y += 1
 
-        # Buttons
+        # Buttons. Same hit-region math as ChmodDialog.
         ok_btn = '[  OK  ]' if self.active_field != 'buttons' or self.button_focus != 0 else '[ >OK< ]'
         cancel_btn = '[Cancel]' if self.active_field != 'buttons' or self.button_focus != 1 else '[>Cancel<]'
-        buttons = f'{ok_btn}  {cancel_btn}'.center(width - 4)
+        button_pair = f'{ok_btn}  {cancel_btn}'
+        buttons = button_pair.center(width - 4)
         self._draw_line(win, line_y, start_x, width, buttons, dialog_attr)
+        leading_pad = (width - 4 - len(button_pair)) // 2
+        ok_x_start = start_x + 2 + leading_pad
+        ok_x_end = ok_x_start + len(ok_btn)
+        cancel_x_start = ok_x_end + 2
+        cancel_x_end = cancel_x_start + len(cancel_btn)
+        self._click_targets.append((ok_x_start, ok_x_end, line_y, 'ok'))
+        self._click_targets.append((cancel_x_start, cancel_x_end, line_y, 'cancel'))
         line_y += 1
 
         # Bottom border
@@ -1878,19 +1945,8 @@ class ChownDialog:
         except curses.error:
             pass
 
-    def show(self, win: Any) -> tuple[str, str] | None:
-        """Show dialog and handle input until done.
-
-        Returns:
-            Tuple of (owner, group) or None if cancelled.
-        """
-        while True:
-            self.render(win)
-            key = win.getch()
-            if self.handle_key(key):
-                if self.cancelled:
-                    return None
-                return self.get_result()
+    # show() inherited from Modal; the loop drives render → getch → handle_key
+    # / handle_click and terminates when set_result fires.
 
 
 def chown_dialog(
