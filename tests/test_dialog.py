@@ -5,33 +5,33 @@ from unittest.mock import MagicMock, patch, call
 
 
 class TestFormatSize(unittest.TestCase):
-    """Tests for format_size function."""
+    """Tests for format_size — re-exported from tnc.utils after #43 dedup."""
 
     def test_format_size_bytes(self):
-        """Sizes under 1KB should show bytes."""
-        from tnc.dialog import format_size
-        self.assertEqual(format_size(0), "0 B")
-        self.assertEqual(format_size(512), "512 B")
-        self.assertEqual(format_size(1023), "1023 B")
+        """Sizes under 1KB should show bare byte count (no suffix)."""
+        from tnc.utils import format_size
+        self.assertEqual(format_size(0), "0")
+        self.assertEqual(format_size(512), "512")
+        self.assertEqual(format_size(1023), "1023")
 
     def test_format_size_kilobytes(self):
-        """Sizes 1KB-1MB should show KB."""
-        from tnc.dialog import format_size
-        self.assertEqual(format_size(1024), "1.0 KB")
-        self.assertEqual(format_size(2048), "2.0 KB")
-        self.assertEqual(format_size(1536), "1.5 KB")
+        """Sizes 1KB-1MB should show K (no space)."""
+        from tnc.utils import format_size
+        self.assertEqual(format_size(1024), "1.0K")
+        self.assertEqual(format_size(2048), "2.0K")
+        self.assertEqual(format_size(1536), "1.5K")
 
     def test_format_size_megabytes(self):
-        """Sizes 1MB-1GB should show MB."""
-        from tnc.dialog import format_size
-        self.assertEqual(format_size(1024 * 1024), "1.0 MB")
-        self.assertEqual(format_size(1024 * 1024 * 5), "5.0 MB")
+        """Sizes 1MB-1GB should show M."""
+        from tnc.utils import format_size
+        self.assertEqual(format_size(1024 * 1024), "1.0M")
+        self.assertEqual(format_size(1024 * 1024 * 5), "5.0M")
 
     def test_format_size_gigabytes(self):
-        """Sizes over 1GB should show GB."""
-        from tnc.dialog import format_size
-        self.assertEqual(format_size(1024 * 1024 * 1024), "1.0 GB")
-        self.assertEqual(format_size(1024 * 1024 * 1024 * 2), "2.0 GB")
+        """Sizes over 1GB should show G."""
+        from tnc.utils import format_size
+        self.assertEqual(format_size(1024 * 1024 * 1024), "1.0G")
+        self.assertEqual(format_size(1024 * 1024 * 1024 * 2), "2.0G")
 
 
 class TestFormatTime(unittest.TestCase):
