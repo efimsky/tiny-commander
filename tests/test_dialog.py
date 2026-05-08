@@ -745,6 +745,49 @@ class TestMockDialogProvider(unittest.TestCase):
         self.assertEqual(result, 'nano')
 
 
+class TestSummaryDialogMouse(unittest.TestCase):
+    """Issue #16: SummaryModal click-on-message-row dismisses; clicks
+    elsewhere are ignored; any key still dismisses."""
+
+    @patch('tnc.dialog.get_attr', return_value=0)
+    def test_click_on_message_row_dismisses(self, _attr):
+        from tnc.dialog import show_summary
+        win = MagicMock()
+        win.getmaxyx.return_value = (24, 80)
+        # Bottom row is y=23 (24-1).
+        win.getch.side_effect = [curses.KEY_MOUSE]
+        with patch(
+            'curses.getmouse',
+            return_value=(0, 5, 23, 0, curses.BUTTON1_CLICKED),
+        ):
+            show_summary(win, 'copy', copied=3)
+        self.assertEqual(win.getch.call_count, 1)
+
+    @patch('tnc.dialog.get_attr', return_value=0)
+    def test_click_above_message_row_is_ignored(self, _attr):
+        from tnc.dialog import show_summary
+        win = MagicMock()
+        win.getmaxyx.return_value = (24, 80)
+        # First click at row 5 (panel area) — ignored. Then 'q' dismisses.
+        win.getch.side_effect = [curses.KEY_MOUSE, ord('q')]
+        with patch(
+            'curses.getmouse',
+            return_value=(0, 5, 5, 0, curses.BUTTON1_CLICKED),
+        ):
+            show_summary(win, 'copy', copied=3)
+        self.assertEqual(win.getch.call_count, 2)
+
+    @patch('tnc.dialog.get_attr', return_value=0)
+    def test_any_key_dismisses_back_compat(self, _attr):
+        from tnc.dialog import show_summary
+        for ch in [ord('q'), ord('\n'), 27, ord(' ')]:
+            with self.subTest(ch=ch):
+                win = MagicMock()
+                win.getmaxyx.return_value = (24, 80)
+                win.getch.return_value = ch
+                show_summary(win, 'move', moved=1)
+
+
 class TestErrorDialogMouse(unittest.TestCase):
     """Issue #16: ErrorModal click on OK dismisses; outside clicks ignored;
     any-key dismiss preserved (back-compat with `getch.return_value=q` tests)."""

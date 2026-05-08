@@ -421,6 +421,43 @@ def overwrite_dialog(
     ).show(win)
 
 
+class SummaryModal(Modal):
+    """Bottom-line success summary with mouse-on-message-row dismiss.
+
+    Renders one line at the bottom of the screen (preserving the previous
+    visual — no centered box, no border) and accepts any keypress to
+    dismiss. Issue #16: a left-click anywhere on the message row also
+    dismisses; clicks elsewhere are ignored.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__()
+        self.message = message
+        self._last_row = -1  # set during render
+
+    def render(self, win: Any) -> None:
+        rows, cols = win.getmaxyx()
+        self._last_row = rows - 1
+        safe_addstr(win, self._last_row, 0, self.message[: cols - 1])
+        try:
+            win.clrtoeol()
+            win.refresh()
+        except curses.error:
+            pass
+
+    def handle_key(self, key: int) -> None:
+        # Any key dismisses — back-compat with the previous one-line summary.
+        self.set_result(None)
+
+    def handle_click(self, x: int, y: int, button_state: int) -> None:
+        if not (button_state & curses.BUTTON1_CLICKED):
+            return
+        # Only the bottom message row dismisses; clicks on the panels above
+        # are ignored so users can keep navigating without losing the summary.
+        if y == self._last_row:
+            self.set_result(None)
+
+
 def show_summary(
     win: Any,
     operation: str,
@@ -432,6 +469,10 @@ def show_summary(
     max_errors: int = 3
 ) -> None:
     """Show operation summary, optionally with error details.
+
+    With errors → centered :class:`ErrorModal` (mouse + keyboard).
+    Without errors → bottom-row :class:`SummaryModal` (any key or click on
+    the message row dismisses).
 
     Args:
         win: Curses window to draw on.
@@ -468,9 +509,6 @@ def show_summary(
         return
 
     # No errors - show simple message at bottom
-    rows, cols = win.getmaxyx()
-    last_row = rows - 1
-
     if cancelled:
         message = 'Operation cancelled'
     elif operation == 'copy':
@@ -486,14 +524,7 @@ def show_summary(
 
     message += ' [Press any key]'
 
-    safe_addstr(win, last_row, 0, message[:cols - 1])
-    try:
-        win.clrtoeol()
-        win.refresh()
-    except curses.error:
-        pass
-
-    win.getch()
+    SummaryModal(message).show(win)
 
 
 class ErrorModal(Modal):
