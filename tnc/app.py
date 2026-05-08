@@ -1597,4 +1597,8 @@ def main_loop(stdscr: Any) -> int:
 
 def run_app() -> int:
     """Run the application using curses.wrapper for safe setup/teardown."""
+    # ncurses defaults ESCDELAY to 1000ms, which makes Escape feel laggy in
+    # dialogs that read getch() directly. setdefault preserves any explicit
+    # user override.
+    os.environ.setdefault('ESCDELAY', '25')
     return curses.wrapper(main_loop)
