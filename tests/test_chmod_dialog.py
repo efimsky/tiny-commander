@@ -213,5 +213,109 @@ class TestChmodDialogRecursive(unittest.TestCase):
         self.assertFalse(dialog.recursive)
 
 
+class TestChmodDialogMouse(unittest.TestCase):
+    """Issue #16: ChmodDialog gains click-on-checkbox / OK / Cancel.
+
+    These tests look up hit regions in `_click_targets` by action id rather
+    than assuming layout pixel positions, so they survive future layout
+    tweaks as long as the action ids stay the same.
+    """
+
+    def _setup(self, has_directory=False, initial_mode=0o644):
+        d = ChmodDialog(
+            file_count=1,
+            initial_mode=initial_mode,
+            has_directory=has_directory,
+            filename='file.txt',
+        )
+        win = mock.MagicMock()
+        win.getmaxyx.return_value = (24, 80)
+        return d, win
+
+    def _click(self, win, x, y):
+        win.getch.side_effect = [curses.KEY_MOUSE]
+        return mock.patch(
+            'curses.getmouse',
+            return_value=(0, x, y, 0, curses.BUTTON1_CLICKED),
+        )
+
+    def _hit_region(self, dialog, action_id):
+        """Return (mid_x, y) from the recorded click target for action_id."""
+        for x_start, x_end, y, target_id in dialog._click_targets:
+            if target_id == action_id:
+                return ((x_start + x_end) // 2, y)
+        raise AssertionError(f'No click target for {action_id!r}')
+
+    def test_click_on_grid_checkbox_toggles_it(self):
+        d, win = self._setup()
+        d.render(win)
+        # owner_read at grid:0:0; in 0o644 it's CHECKED (read=4 in owner=6).
+        before = d.get_bit_state('owner_read')
+        x, y = self._hit_region(d, 'grid:0:0')
+        win.getch.side_effect = [curses.KEY_MOUSE, 27]  # click then Esc
+        with mock.patch(
+            'curses.getmouse',
+            return_value=(0, x, y, 0, curses.BUTTON1_CLICKED),
+        ):
+            d.show(win)
+        after = d.get_bit_state('owner_read')
+        self.assertNotEqual(before, after)
+
+    def test_click_on_special_checkbox_toggles_it(self):
+        d, win = self._setup()
+        d.render(win)
+        before = d.get_bit_state('setuid')
+        x, y = self._hit_region(d, 'special:0')
+        win.getch.side_effect = [curses.KEY_MOUSE, 27]
+        with mock.patch(
+            'curses.getmouse',
+            return_value=(0, x, y, 0, curses.BUTTON1_CLICKED),
+        ):
+            d.show(win)
+        self.assertNotEqual(d.get_bit_state('setuid'), before)
+
+    def test_click_on_recursive_checkbox_toggles_it(self):
+        d, win = self._setup(has_directory=True)
+        d.render(win)
+        self.assertFalse(d.recursive)
+        x, y = self._hit_region(d, 'recursive')
+        win.getch.side_effect = [curses.KEY_MOUSE, 27]
+        with mock.patch(
+            'curses.getmouse',
+            return_value=(0, x, y, 0, curses.BUTTON1_CLICKED),
+        ):
+            d.show(win)
+        self.assertTrue(d.recursive)
+
+    def test_click_on_ok_returns_mode(self):
+        d, win = self._setup(initial_mode=0o755)
+        d.render(win)
+        x, y = self._hit_region(d, 'ok')
+        win.getch.side_effect = [curses.KEY_MOUSE]
+        with mock.patch(
+            'curses.getmouse',
+            return_value=(0, x, y, 0, curses.BUTTON1_CLICKED),
+        ):
+            self.assertEqual(d.show(win), 0o755)
+
+    def test_click_on_cancel_returns_none(self):
+        d, win = self._setup()
+        d.render(win)
+        x, y = self._hit_region(d, 'cancel')
+        win.getch.side_effect = [curses.KEY_MOUSE]
+        with mock.patch(
+            'curses.getmouse',
+            return_value=(0, x, y, 0, curses.BUTTON1_CLICKED),
+        ):
+            self.assertIsNone(d.show(win))
+
+    def test_existing_arrow_navigation_preserved(self):
+        """Regression: arrow Down moves grid cursor row down."""
+        d, win = self._setup()
+        # Start: focus_section='grid', cursor_row=0, cursor_col=0
+        d.handle_key(curses.KEY_DOWN)
+        self.assertEqual(d.cursor_row, 1)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -1,6 +1,8 @@
 """Tests for dialog module."""
 
+import curses
 import unittest
+from unittest import mock
 from unittest.mock import MagicMock, patch, call
 
 
@@ -741,6 +743,367 @@ class TestMockDialogProvider(unittest.TestCase):
         result = mock_provider.select('Select editor', ['nano', 'vim'])
 
         self.assertEqual(result, 'nano')
+
+
+class TestSelectionDialogMouse(unittest.TestCase):
+    """Issue #16: SelectionDialog gains arrow-key + click navigation while
+    keeping the digit shortcuts and Esc behaviour."""
+
+    def _setup(self, options=None, allow_custom=False):
+        from tnc.dialog import SelectionDialog
+        d = SelectionDialog(
+            title='Pick',
+            options=options or ['nano', 'vim', 'emacs'],
+            allow_custom=allow_custom,
+        )
+        win = MagicMock()
+        win.getmaxyx.return_value = (24, 80)
+        return d, win
+
+    @patch('tnc.dialog.get_attr', return_value=0)
+    def test_click_on_option_returns_that_option(self, _attr):
+        d, win = self._setup()
+        d.render(win)
+        # Click in the middle of the second option's row.
+        x_start, x_end, row_y, _ = d.option_positions[1]
+        midx = (x_start + x_end) // 2
+
+        win.getch.side_effect = [curses.KEY_MOUSE]
+        with patch(
+            'curses.getmouse',
+            return_value=(0, midx, row_y, 0, curses.BUTTON1_CLICKED),
+        ):
+            self.assertEqual(d.show(win), 'vim')
+
+    @patch('tnc.dialog.get_attr', return_value=0)
+    def test_arrow_down_then_enter_activates_focused(self, _attr):
+        d, win = self._setup()
+        # Initial focus = 0 (nano). Down-Down → emacs (index 2). Enter activates.
+        win.getch.side_effect = [
+            curses.KEY_DOWN, curses.KEY_DOWN, ord('\n'),
+        ]
+        self.assertEqual(d.show(win), 'emacs')
+
+    @patch('tnc.dialog.get_attr', return_value=0)
+    def test_arrow_up_wraps_to_last(self, _attr):
+        d, win = self._setup()
+        # From focus 0, Up wraps to last (index 2 = emacs). Enter activates.
+        win.getch.side_effect = [curses.KEY_UP, ord('\n')]
+        self.assertEqual(d.show(win), 'emacs')
+
+    @patch('tnc.dialog.get_attr', return_value=0)
+    def test_existing_digit_shortcut_returns_option(self, _attr):
+        """Regression test: digits still map directly to options."""
+        d, _ = self._setup()
+        self.assertEqual(d.handle_key(ord('2')), 'vim')
+
+    @patch('tnc.dialog.get_attr', return_value=0)
+    def test_click_on_custom_option_enters_custom_mode(self, _attr):
+        d, win = self._setup(allow_custom=True)
+        d.render(win)
+        # Find the custom row.
+        custom_entry = next(
+            e for e in d.option_positions if e[3] == 'custom'
+        )
+        x_start, x_end, row_y, _ = custom_entry
+        midx = (x_start + x_end) // 2
+
+        # Click → enter custom mode; Esc in custom mode exits to normal
+        # mode (does NOT cancel); a second Esc in normal mode cancels.
+        win.getch.side_effect = [curses.KEY_MOUSE, 27, 27]
+        with patch(
+            'curses.getmouse',
+            return_value=(0, midx, row_y, 0, curses.BUTTON1_CLICKED),
+        ):
+            self.assertIsNone(d.show(win))
+        # Loop ran: click, Esc-leave-custom, Esc-cancel = 3 getch calls.
+        self.assertEqual(win.getch.call_count, 3)
+
+
+class TestSummaryDialogMouse(unittest.TestCase):
+    """Issue #16: SummaryModal click-on-message-row dismisses; clicks
+    elsewhere are ignored; any key still dismisses."""
+
+    @patch('tnc.dialog.get_attr', return_value=0)
+    def test_click_on_message_row_dismisses(self, _attr):
+        from tnc.dialog import show_summary
+        win = MagicMock()
+        win.getmaxyx.return_value = (24, 80)
+        # Bottom row is y=23 (24-1).
+        win.getch.side_effect = [curses.KEY_MOUSE]
+        with patch(
+            'curses.getmouse',
+            return_value=(0, 5, 23, 0, curses.BUTTON1_CLICKED),
+        ):
+            show_summary(win, 'copy', copied=3)
+        self.assertEqual(win.getch.call_count, 1)
+
+    @patch('tnc.dialog.get_attr', return_value=0)
+    def test_click_above_message_row_is_ignored(self, _attr):
+        from tnc.dialog import show_summary
+        win = MagicMock()
+        win.getmaxyx.return_value = (24, 80)
+        # First click at row 5 (panel area) — ignored. Then 'q' dismisses.
+        win.getch.side_effect = [curses.KEY_MOUSE, ord('q')]
+        with patch(
+            'curses.getmouse',
+            return_value=(0, 5, 5, 0, curses.BUTTON1_CLICKED),
+        ):
+            show_summary(win, 'copy', copied=3)
+        self.assertEqual(win.getch.call_count, 2)
+
+    @patch('tnc.dialog.get_attr', return_value=0)
+    def test_any_key_dismisses_back_compat(self, _attr):
+        from tnc.dialog import show_summary
+        for ch in [ord('q'), ord('\n'), 27, ord(' ')]:
+            with self.subTest(ch=ch):
+                win = MagicMock()
+                win.getmaxyx.return_value = (24, 80)
+                win.getch.return_value = ch
+                show_summary(win, 'move', moved=1)
+
+
+class TestErrorDialogMouse(unittest.TestCase):
+    """Issue #16: ErrorModal click on OK dismisses; outside clicks ignored;
+    any-key dismiss preserved (back-compat with `getch.return_value=q` tests)."""
+
+    @patch('tnc.dialog.get_attr', return_value=0)
+    def test_click_on_ok_dismisses(self, _attr):
+        from tnc.dialog import ErrorModal
+        modal = ErrorModal('Error', 'something failed')
+        win = MagicMock()
+        win.getmaxyx.return_value = (24, 80)
+
+        modal.render(win)
+        x_start, x_end, btn_y, _ = modal.button_bar.button_positions[0]
+        midx = (x_start + x_end) // 2
+        win.getch.side_effect = [curses.KEY_MOUSE]
+        with patch(
+            'curses.getmouse',
+            return_value=(0, midx, btn_y, 0, curses.BUTTON1_CLICKED),
+        ):
+            self.assertIsNone(modal.show(win))
+
+    @patch('tnc.dialog.get_attr', return_value=0)
+    def test_click_outside_modal_does_not_dismiss(self, _attr):
+        """Click at (0,0) — well outside the dialog — must keep the loop alive.
+        We follow it with a key press to terminate so the test can assert."""
+        from tnc.dialog import ErrorModal
+        modal = ErrorModal('Error', 'something failed')
+        win = MagicMock()
+        win.getmaxyx.return_value = (24, 80)
+
+        win.getch.side_effect = [curses.KEY_MOUSE, ord('q')]
+        with patch(
+            'curses.getmouse',
+            return_value=(0, 0, 0, 0, curses.BUTTON1_CLICKED),
+        ):
+            modal.show(win)
+        # Two getch calls: outside click ignored, then 'q' dismisses.
+        self.assertEqual(win.getch.call_count, 2)
+
+    @patch('tnc.dialog.get_attr', return_value=0)
+    def test_any_key_dismisses_back_compat(self, _attr):
+        """Existing tests stub `getch.return_value = ord('q')` etc. Preserve."""
+        from tnc.dialog import show_error_dialog
+        for ch in [ord('q'), ord('\n'), 27, ord('x')]:
+            with self.subTest(ch=ch):
+                win = MagicMock()
+                win.getmaxyx.return_value = (24, 80)
+                win.getch.return_value = ch
+                # Should return without raising.
+                show_error_dialog(win, 'Error', 'msg')
+
+
+class TestOverwriteDialogMouse(unittest.TestCase):
+    """Issue #16: OverwriteModal must respond to mouse clicks and arrow keys
+    while preserving y/n/a/s/o/Esc shortcuts."""
+
+    def _build_modal(self):
+        from tnc.dialog import OverwriteModal
+        return OverwriteModal(
+            filename='file.txt',
+            source_size=1024,
+            dest_size=2048,
+            source_mtime=1000.0,
+            dest_mtime=900.0,
+            current=1,
+            total=1,
+        )
+
+    @patch('tnc.dialog.get_attr', return_value=0)
+    def test_click_on_each_of_five_buttons_returns_correct_choice(self, _attr):
+        from tnc.file_ops import OverwriteChoice
+        expected = [
+            OverwriteChoice.YES,
+            OverwriteChoice.NO,
+            OverwriteChoice.YES_ALL,
+            OverwriteChoice.NO_ALL,
+            OverwriteChoice.YES_OLDER,
+        ]
+
+        for choice in expected:
+            with self.subTest(choice=choice):
+                modal = self._build_modal()
+                win = MagicMock()
+                win.getmaxyx.return_value = (24, 80)
+                modal.render(win)
+                # Locate this button by value in the bar's hit-region cache.
+                entry = next(
+                    e for e in modal.button_bar.button_positions if e[3] == choice
+                )
+                x_start, x_end, btn_y, _ = entry
+                midx = (x_start + x_end) // 2
+
+                win.getch.side_effect = [curses.KEY_MOUSE]
+                with patch(
+                    'curses.getmouse',
+                    return_value=(0, midx, btn_y, 0, curses.BUTTON1_CLICKED),
+                ):
+                    self.assertEqual(modal.show(win), choice)
+
+    @patch('tnc.dialog.get_attr', return_value=0)
+    def test_arrow_keys_cycle_then_enter_activates(self, _attr):
+        from tnc.file_ops import OverwriteChoice
+        modal = self._build_modal()
+        win = MagicMock()
+        win.getmaxyx.return_value = (24, 80)
+        # Start at Yes (focus 0). Right twice → All (index 2). Enter activates.
+        win.getch.side_effect = [
+            curses.KEY_RIGHT, curses.KEY_RIGHT, ord('\n'),
+        ]
+        self.assertEqual(modal.show(win), OverwriteChoice.YES_ALL)
+
+    @patch('tnc.dialog.get_attr', return_value=0)
+    def test_existing_letter_shortcuts_preserved(self, _attr):
+        from tnc.dialog import overwrite_dialog
+        from tnc.file_ops import OverwriteChoice
+        cases = [
+            (ord('y'), OverwriteChoice.YES), (ord('Y'), OverwriteChoice.YES),
+            (ord('n'), OverwriteChoice.NO),  (ord('N'), OverwriteChoice.NO),
+            (ord('a'), OverwriteChoice.YES_ALL),
+            (ord('s'), OverwriteChoice.NO_ALL),
+            (ord('o'), OverwriteChoice.YES_OLDER),
+            (27, OverwriteChoice.CANCEL),
+        ]
+        for ch, expected in cases:
+            with self.subTest(ch=ch):
+                win = MagicMock()
+                win.getmaxyx.return_value = (24, 80)
+                win.getch.side_effect = [ch]
+                self.assertEqual(
+                    overwrite_dialog(
+                        win, 'file.txt', 1024, 2048,
+                        source_mtime=1000.0, dest_mtime=900.0,
+                        current=1, total=1,
+                    ),
+                    expected,
+                )
+
+
+class TestConfirmDialogMouse(unittest.TestCase):
+    """Issue #16: ConfirmModal must respond to mouse clicks and arrow keys
+    while keeping the original y/n/Esc/Enter shortcuts."""
+
+    def _click_at(self, win, target_x: int, target_y: int):
+        """Helper: rig getch to issue ONE KEY_MOUSE event for (target_x, target_y)
+        with BUTTON1_CLICKED, followed by Esc as a safety terminator."""
+        win.getch.side_effect = [curses.KEY_MOUSE, 27]
+        return mock.patch(
+            'curses.getmouse',
+            return_value=(0, target_x, target_y, 0, curses.BUTTON1_CLICKED),
+        )
+
+    @patch('tnc.dialog.get_attr', return_value=0)
+    def test_click_on_yes_button_returns_true(self, _get_attr):
+        from tnc.dialog import ConfirmModal
+        modal = ConfirmModal('Title', 'msg', default_yes=True)
+        win = MagicMock()
+        win.getmaxyx.return_value = (24, 80)
+
+        # Render once so the button bar records hit regions.
+        modal.render(win)
+        # Pick the visible Yes button position.
+        yes_entry = next(
+            e for e in modal.button_bar.button_positions if e[3] is True
+        )
+        x_start, x_end, btn_y, _ = yes_entry
+        midx = (x_start + x_end) // 2
+
+        win.getch.side_effect = [curses.KEY_MOUSE]
+        with patch('curses.getmouse',
+                   return_value=(0, midx, btn_y, 0, curses.BUTTON1_CLICKED)):
+            result = modal.show(win)
+
+        self.assertIs(result, True)
+
+    @patch('tnc.dialog.get_attr', return_value=0)
+    def test_click_on_no_button_returns_false(self, _get_attr):
+        from tnc.dialog import ConfirmModal
+        modal = ConfirmModal('Title', 'msg', default_yes=True)
+        win = MagicMock()
+        win.getmaxyx.return_value = (24, 80)
+
+        modal.render(win)
+        no_entry = next(
+            e for e in modal.button_bar.button_positions if e[3] is False
+        )
+        x_start, x_end, btn_y, _ = no_entry
+        midx = (x_start + x_end) // 2
+
+        win.getch.side_effect = [curses.KEY_MOUSE]
+        with patch('curses.getmouse',
+                   return_value=(0, midx, btn_y, 0, curses.BUTTON1_CLICKED)):
+            result = modal.show(win)
+
+        self.assertIs(result, False)
+
+    @patch('tnc.dialog.get_attr', return_value=0)
+    def test_click_outside_modal_does_nothing_then_y_returns_true(self, _get_attr):
+        """A click that misses every button keeps the loop alive; the next y
+        keystroke returns True. This proves outside clicks are ignored."""
+        from tnc.dialog import ConfirmModal
+        modal = ConfirmModal('Title', 'msg', default_yes=True)
+        win = MagicMock()
+        win.getmaxyx.return_value = (24, 80)
+
+        # Mouse click at (0, 0) — well outside the modal box.
+        win.getch.side_effect = [curses.KEY_MOUSE, ord('y')]
+        with patch('curses.getmouse',
+                   return_value=(0, 0, 0, 0, curses.BUTTON1_CLICKED)):
+            result = modal.show(win)
+
+        self.assertIs(result, True)
+        # render was called twice: once before the click, once before the 'y'.
+        self.assertEqual(win.getch.call_count, 2)
+
+    @patch('tnc.dialog.get_attr', return_value=0)
+    def test_arrow_keys_cycle_focus_then_enter_activates(self, _get_attr):
+        from tnc.dialog import ConfirmModal
+        modal = ConfirmModal('Title', 'msg', default_yes=True)
+        win = MagicMock()
+        win.getmaxyx.return_value = (24, 80)
+
+        # Default focus = Yes (index 0). Arrow Right moves to No, Enter activates.
+        win.getch.side_effect = [curses.KEY_RIGHT, ord('\n')]
+        result = modal.show(win)
+        self.assertIs(result, False)
+
+    @patch('tnc.dialog.get_attr', return_value=0)
+    def test_existing_y_n_esc_enter_keys_preserved(self, _get_attr):
+        """Regression test — the keyboard contract from before #16 still works."""
+        from tnc.dialog import confirm_dialog
+        win = MagicMock()
+        win.getmaxyx.return_value = (24, 80)
+
+        for ch, expected in [(ord('y'), True), (ord('Y'), True),
+                             (ord('n'), False), (ord('N'), False),
+                             (27, False)]:
+            with self.subTest(ch=ch):
+                win.getch.side_effect = [ch]
+                self.assertEqual(
+                    confirm_dialog(win, 'Title', 'msg'), expected
+                )
 
 
 if __name__ == '__main__':

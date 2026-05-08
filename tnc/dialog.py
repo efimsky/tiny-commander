@@ -6,6 +6,7 @@ from typing import Any, Protocol
 
 from tnc.colors import PAIR_DIALOG, PAIR_DIALOG_TITLE, get_attr
 from tnc.file_ops import OverwriteChoice, OverwriteHandler
+from tnc.modal import Button, ButtonBar, Modal
 from tnc.utils import format_size, safe_addstr
 
 
@@ -210,13 +211,79 @@ def draw_modal(
     return (y, x)
 
 
+class ConfirmModal(Modal):
+    """Y/N confirmation dialog backed by the shared Modal shell.
+
+    Click on either button activates it; arrow keys cycle focus; Enter
+    activates the focused button. The original y/n/Esc/Enter shortcuts
+    are preserved for muscle memory.
+    """
+
+    def __init__(
+        self, title: str, message: str, default_yes: bool = True
+    ) -> None:
+        super().__init__()
+        self.title = title
+        self.message = message
+        self.default_yes = default_yes
+        self.button_bar = ButtonBar(
+            buttons=[
+                Button(label='Yes', shortcut='y', value=True),
+                Button(label='No', shortcut='n', value=False),
+            ],
+            focused=0 if default_yes else 1,
+        )
+        self._width = max(len(message) + 6, len(title) + 6, 30)
+
+    def render(self, win: Any) -> None:
+        # Reserve one body line for the button bar (rendered on top).
+        body = [self.message, '', '']
+        box_y, box_x = draw_modal(win, self.title, body, width=self._width)
+        btn_y = box_y + 3 + len(body) - 1
+        self.button_bar.render(
+            win, y=btn_y, x_start=box_x + 2, total_width=self._width - 4,
+            base_attr=get_attr(PAIR_DIALOG),
+        )
+        win.refresh()
+
+    def handle_key(self, key: int) -> None:
+        # Letter shortcuts (case-insensitive).
+        if key in (ord('y'), ord('Y')):
+            self.set_result(True)
+            return
+        if key in (ord('n'), ord('N'), 27):  # 27 = Escape
+            self.set_result(False)
+            return
+        # Arrow / Tab → cycle focus.
+        if key in (curses.KEY_LEFT, curses.KEY_UP):
+            self.button_bar.move_focus(-1)
+            return
+        if key in (curses.KEY_RIGHT, curses.KEY_DOWN, ord('\t')):
+            self.button_bar.move_focus(1)
+            return
+        # Enter activates the focused button.
+        if key in (ord('\n'), ord('\r'), curses.KEY_ENTER):
+            self.set_result(self.button_bar.activate())
+
+    def handle_click(self, x: int, y: int, button_state: int) -> None:
+        if not (button_state & curses.BUTTON1_CLICKED):
+            return
+        value = self.button_bar.hit_test(x, y)
+        if value is not None:
+            self.set_result(value)
+
+
 def confirm_dialog(
     win: Any,
     title: str,
     message: str,
     default_yes: bool = True
 ) -> bool:
-    """Show a simple y/n confirmation dialog.
+    """Show a simple y/n confirmation dialog (mouse + keyboard).
+
+    Backed by :class:`ConfirmModal`. Mouse click on either button activates
+    it; arrow keys / Tab cycle focus; Enter activates the focused button;
+    y/n/Esc keep their original meaning for muscle memory.
 
     Args:
         win: Curses window to draw on.
@@ -227,23 +294,95 @@ def confirm_dialog(
     Returns:
         True if user confirmed, False otherwise.
     """
-    # Show [Y/n] or [y/N] based on default
-    if default_yes:
-        hint = '[Y/n]'
-    else:
-        hint = '[y/N]'
+    return ConfirmModal(title, message, default_yes=default_yes).show(win)
 
-    lines = [message, '', f'(y)es  (n)o  {hint}']
-    draw_modal(win, title, lines, width=max(len(message) + 6, len(title) + 6, 30))
 
-    while True:
-        key = win.getch()
-        if key in (ord('y'), ord('Y')):
-            return True
-        elif key in (ord('n'), ord('N'), 27):  # 27 = Escape
-            return False
-        elif key in (ord('\n'), ord('\r'), curses.KEY_ENTER):
-            return default_yes
+class OverwriteModal(Modal):
+    """File-already-exists overwrite prompt with mouse and arrow-key nav.
+
+    Five focusable buttons (Yes, No, All, Skip, Older). Esc cancels with
+    OverwriteChoice.CANCEL. Letter shortcuts y/n/a/s/o still work.
+    """
+
+    def __init__(
+        self,
+        filename: str,
+        source_size: int,
+        dest_size: int,
+        source_mtime: float,
+        dest_mtime: float,
+        current: int,
+        total: int,
+    ) -> None:
+        super().__init__()
+        self.title = f'File already exists - {current} of {total}'
+        self.filename = filename
+        self.source_info = (
+            f'Source:  {format_size(source_size):>10}   {format_time(source_mtime)}'
+        )
+        self.dest_info = (
+            f'Dest:    {format_size(dest_size):>10}   {format_time(dest_mtime)}'
+        )
+        self.button_bar = ButtonBar(
+            buttons=[
+                Button(label='Yes', shortcut='y', value=OverwriteChoice.YES),
+                Button(label='No', shortcut='n', value=OverwriteChoice.NO),
+                Button(label='All', shortcut='a', value=OverwriteChoice.YES_ALL),
+                Button(label='Skip', shortcut='s', value=OverwriteChoice.NO_ALL),
+                Button(label='Older', shortcut='o', value=OverwriteChoice.YES_OLDER),
+            ],
+            focused=0,
+        )
+        # Width must fit the title, the filename, file info rows, and the
+        # 5-button bar. The bar needs ~9 cells per button (`[ Older ]` is
+        # the widest button text) — keep the heuristic explicit.
+        min_button_bar_width = len(self.button_bar.buttons) * 9
+        self._width = max(
+            len(self.title) + 6,
+            len(filename) + 6,
+            len(self.source_info) + 6,
+            min_button_bar_width + 4,
+            50,
+        )
+
+    def render(self, win: Any) -> None:
+        body = [self.filename, '', self.source_info, self.dest_info, '']
+        box_y, box_x = draw_modal(win, self.title, body, width=self._width)
+        btn_y = box_y + 3 + len(body) - 1
+        self.button_bar.render(
+            win, y=btn_y, x_start=box_x + 2, total_width=self._width - 4,
+            base_attr=get_attr(PAIR_DIALOG),
+        )
+        win.refresh()
+
+    def handle_key(self, key: int) -> None:
+        if key == 27:  # Escape
+            self.set_result(OverwriteChoice.CANCEL)
+            return
+        # Letter shortcuts (case-insensitive).
+        try:
+            ch = chr(key)
+        except ValueError:
+            ch = ''
+        shortcut_value = self.button_bar.activate_by_shortcut(ch)
+        if shortcut_value is not None:
+            self.set_result(shortcut_value)
+            return
+        if key in (curses.KEY_LEFT, curses.KEY_UP):
+            self.button_bar.move_focus(-1)
+            return
+        if key in (curses.KEY_RIGHT, curses.KEY_DOWN, ord('\t')):
+            self.button_bar.move_focus(1)
+            return
+        if key in (ord('\n'), ord('\r'), curses.KEY_ENTER):
+            self.set_result(self.button_bar.activate())
+
+    def handle_click(self, x: int, y: int, button_state: int) -> None:
+        if not (button_state & curses.BUTTON1_CLICKED):
+            return
+        value = self.button_bar.hit_test(x, y)
+        if value is not None:
+            self.set_result(value)
 
 
 def overwrite_dialog(
@@ -256,7 +395,9 @@ def overwrite_dialog(
     current: int,
     total: int
 ) -> OverwriteChoice:
-    """Show overwrite confirmation dialog with file details.
+    """Show overwrite confirmation dialog (mouse + keyboard).
+
+    Backed by :class:`OverwriteModal`. See class docstring for behaviour.
 
     Args:
         win: Curses window to draw on.
@@ -271,46 +412,52 @@ def overwrite_dialog(
     Returns:
         User's choice as OverwriteChoice enum.
     """
-    title = f'File already exists - {current} of {total}'
+    return OverwriteModal(
+        filename=filename,
+        source_size=source_size,
+        dest_size=dest_size,
+        source_mtime=source_mtime,
+        dest_mtime=dest_mtime,
+        current=current,
+        total=total,
+    ).show(win)
 
-    # Format file info
-    source_info = f'Source:  {format_size(source_size):>10}   {format_time(source_mtime)}'
-    dest_info = f'Dest:    {format_size(dest_size):>10}   {format_time(dest_mtime)}'
 
-    lines = [
-        filename,
-        '',
-        source_info,
-        dest_info,
-    ]
+class SummaryModal(Modal):
+    """Bottom-line success summary with mouse-on-message-row dismiss.
 
-    footer = '(y)es (n)o (a)ll (s)kip-all (o)nly-newer Esc'
+    Renders one line at the bottom of the screen (preserving the previous
+    visual — no centered box, no border) and accepts any keypress to
+    dismiss. Issue #16: a left-click anywhere on the message row also
+    dismisses; clicks elsewhere are ignored.
+    """
 
-    # Calculate width to fit content
-    width = max(
-        len(title) + 6,
-        len(filename) + 6,
-        len(source_info) + 6,
-        len(footer) + 6,
-        50
-    )
+    def __init__(self, message: str) -> None:
+        super().__init__()
+        self.message = message
+        self._last_row = -1  # set during render
 
-    draw_modal(win, title, lines, width=width, footer=footer)
+    def render(self, win: Any) -> None:
+        rows, cols = win.getmaxyx()
+        self._last_row = rows - 1
+        safe_addstr(win, self._last_row, 0, self.message[: cols - 1])
+        try:
+            win.clrtoeol()
+            win.refresh()
+        except curses.error:
+            pass
 
-    while True:
-        key = win.getch()
-        if key in (ord('y'), ord('Y')):
-            return OverwriteChoice.YES
-        elif key in (ord('n'), ord('N')):
-            return OverwriteChoice.NO
-        elif key in (ord('a'), ord('A')):
-            return OverwriteChoice.YES_ALL
-        elif key in (ord('s'), ord('S')):
-            return OverwriteChoice.NO_ALL
-        elif key in (ord('o'), ord('O')):
-            return OverwriteChoice.YES_OLDER
-        elif key == 27:  # Escape
-            return OverwriteChoice.CANCEL
+    def handle_key(self, key: int) -> None:
+        # Any key dismisses — back-compat with the previous one-line summary.
+        self.set_result(None)
+
+    def handle_click(self, x: int, y: int, button_state: int) -> None:
+        if not (button_state & curses.BUTTON1_CLICKED):
+            return
+        # Only the bottom message row dismisses; clicks on the panels above
+        # are ignored so users can keep navigating without losing the summary.
+        if y == self._last_row:
+            self.set_result(None)
 
 
 def show_summary(
@@ -324,6 +471,10 @@ def show_summary(
     max_errors: int = 3
 ) -> None:
     """Show operation summary, optionally with error details.
+
+    With errors → centered :class:`ErrorModal` (mouse + keyboard).
+    Without errors → bottom-row :class:`SummaryModal` (any key or click on
+    the message row dismisses).
 
     Args:
         win: Curses window to draw on.
@@ -360,9 +511,6 @@ def show_summary(
         return
 
     # No errors - show simple message at bottom
-    rows, cols = win.getmaxyx()
-    last_row = rows - 1
-
     if cancelled:
         message = 'Operation cancelled'
     elif operation == 'copy':
@@ -378,14 +526,71 @@ def show_summary(
 
     message += ' [Press any key]'
 
-    safe_addstr(win, last_row, 0, message[:cols - 1])
-    try:
-        win.clrtoeol()
-        win.refresh()
-    except curses.error:
-        pass
+    SummaryModal(message).show(win)
 
-    win.getch()
+
+class ErrorModal(Modal):
+    """Modal error dialog with mouse + keyboard dismiss.
+
+    Click on OK or press any key to dismiss. Esc also dismisses (cancel and
+    OK behave identically — there's nothing else to do). The "any key" path
+    preserves muscle memory and the dozens of existing tests that stub
+    ``getch.return_value = ord('q')``.
+    """
+
+    def __init__(
+        self,
+        title: str,
+        message: str,
+        details: list[str] | None = None,
+        max_details: int = 5,
+    ) -> None:
+        super().__init__()
+        self.title = title
+
+        lines = [message, '']
+        if details:
+            for error in details[:max_details]:
+                lines.append(f'  {error}')
+            remaining = len(details) - max_details
+            if remaining > 0:
+                lines.append(f'  ...and {remaining} more error(s)')
+        lines.append('')
+
+        self._body = lines
+        self.button_bar = ButtonBar(
+            buttons=[Button(label='OK', shortcut='', value=None)],
+            focused=0,
+        )
+
+        max_line_len = max(len(line) for line in lines + [self.title]) if lines else len(self.title)
+        self._width = max(len(self.title) + 6, max_line_len + 6, 40)
+
+    def render(self, win: Any) -> None:
+        body = self._body + ['']  # last line reserved for button bar
+        box_y, box_x = draw_modal(win, self.title, body, width=self._width)
+        btn_y = box_y + 3 + len(body) - 1
+        self.button_bar.render(
+            win, y=btn_y, x_start=box_x + 2, total_width=self._width - 4,
+            base_attr=get_attr(PAIR_DIALOG),
+        )
+        win.refresh()
+
+    def handle_key(self, key: int) -> None:
+        # Any key dismisses — back-compat with the previous "press any key"
+        # contract. set_result(None) signals a clean dismiss.
+        self.set_result(None)
+
+    def handle_click(self, x: int, y: int, button_state: int) -> None:
+        # The OK button's value is None (there's no other meaningful return),
+        # so ButtonBar.hit_test can't tell "hit OK" from "missed". Walk the
+        # cached positions explicitly: in-bar click dismisses, outside ignores.
+        if not (button_state & curses.BUTTON1_CLICKED):
+            return
+        for x_start, x_end, btn_y, _value in self.button_bar.button_positions:
+            if y == btn_y and x_start <= x < x_end:
+                self.set_result(None)
+                return
 
 
 def show_error_dialog(
@@ -395,11 +600,11 @@ def show_error_dialog(
     details: list[str] | None = None,
     max_details: int = 5
 ) -> None:
-    """Display a modal error dialog.
+    """Display a modal error dialog (mouse + keyboard).
 
     Shows an error message in a centered modal dialog, optionally with
-    additional detail lines (e.g., per-file errors). Waits for user to
-    press any key before returning.
+    additional detail lines (e.g., per-file errors). Click OK or press any
+    key to dismiss.
 
     Args:
         win: Curses window to draw on.
@@ -408,27 +613,7 @@ def show_error_dialog(
         details: Optional list of detailed error messages (e.g., per-file errors).
         max_details: Maximum number of detail lines to show before truncating.
     """
-    lines = [message, '']
-
-    if details:
-        # Show up to max_details errors
-        for error in details[:max_details]:
-            lines.append(f'  {error}')
-
-        # Show truncation message if there are more
-        remaining = len(details) - max_details
-        if remaining > 0:
-            lines.append(f'  ...and {remaining} more error(s)')
-
-    lines.append('')
-    lines.append('[Press any key]')
-
-    # Calculate width to fit content
-    max_line_len = max(len(line) for line in lines)
-    width = max(len(title) + 6, max_line_len + 6, 40)
-
-    draw_modal(win, title, lines, width=width)
-    win.getch()
+    ErrorModal(title, message, details=details, max_details=max_details).show(win)
 
 
 class CursesOverwriteHandler(OverwriteHandler):
@@ -557,16 +742,23 @@ class CursesDialogProvider:
         return input_dialog(self.win, title, prompt, default_value)
 
 
-class SelectionDialog:
+class SelectionDialog(Modal):
     """A modal selection dialog with numbered options.
 
     Displays a centered, bordered dialog box with a title and
     numbered options. Optionally includes a Custom option for text input.
 
+    Issue #16: subclasses :class:`Modal` so it inherits mouse routing.
+    Up/Down arrows move focus across options; Enter activates focused;
+    digit shortcuts (1-9) and Esc behaviour are preserved. Click on an
+    option activates it directly.
+
     Attributes:
         title: Dialog title displayed in top border.
         options: List of option strings.
         allow_custom: Whether to show Custom option.
+        focused: Index of the currently focused option (0-indexed across
+            real options + Custom slot if enabled).
         in_custom_input_mode: Whether currently in text input mode.
         custom_text: Text entered in custom mode.
     """
@@ -586,11 +778,15 @@ class SelectionDialog:
             options: List of options to display.
             allow_custom: If True, add Custom option for text input.
         """
+        super().__init__()
         self.title = title
         self.options = options
         self.allow_custom = allow_custom
         self.in_custom_input_mode = False
         self.custom_text = ''
+        self.focused = 0
+        # Each entry: (x_start, x_end, y, option_index_or_'custom')
+        self.option_positions: list[tuple[int, int, int, Any]] = []
 
     def get_dimensions(self) -> tuple[int, int]:
         """Calculate dialog dimensions based on content.
@@ -620,31 +816,61 @@ class SelectionDialog:
 
         return width, height
 
+    def _total_focusable(self) -> int:
+        """Count of focusable rows (real options + Custom if enabled)."""
+        return len(self.options) + (1 if self.allow_custom else 0)
+
     def handle_key(self, key: int) -> str | None:
-        """Handle a keypress and return result.
+        """Handle a keypress.
+
+        Returns the selected string for direct callers (back-compat with
+        existing tests). Internally also calls :meth:`Modal.set_result` so
+        the :meth:`Modal.show` loop terminates correctly.
 
         Args:
             key: Key code from curses.
 
         Returns:
-            Selected option string, or None if not handled/cancelled.
+            Selected option string, or None if not handled / cancelled.
         """
         if self.in_custom_input_mode:
-            return self._handle_custom_input_key(key)
+            result = self._handle_custom_input_key(key)
+            if result is not None:
+                self.set_result(result)
+            return result
 
-        # Escape cancels
+        # Escape cancels.
         if key == 27:
+            self.set_result(None)
             return None
 
-        # Check for number key (supports 1-9 only)
+        # Up/Down move focus across the focusable rows.
+        if key == curses.KEY_UP:
+            total = self._total_focusable()
+            if total > 0:
+                self.focused = (self.focused - 1) % total
+            return None
+        if key == curses.KEY_DOWN:
+            total = self._total_focusable()
+            if total > 0:
+                self.focused = (self.focused + 1) % total
+            return None
+
+        # Enter activates the focused option (new in #16).
+        if key in (ord('\n'), ord('\r'), curses.KEY_ENTER):
+            return self._activate_focused()
+
+        # Digit shortcuts (1-9) — preserve existing behavior.
         try:
             char = chr(key)
             if char.isdigit():
                 num = int(char)
                 if 1 <= num <= len(self.options):
-                    return self.options[num - 1]
+                    result = self.options[num - 1]
+                    self.set_result(result)
+                    return result
                 elif self.allow_custom and num == len(self.options) + 1:
-                    # Enter custom input mode
+                    # Enter custom input mode (no set_result yet).
                     self.in_custom_input_mode = True
                     self.custom_text = ''
                     return None
@@ -652,6 +878,38 @@ class SelectionDialog:
             pass
 
         return None
+
+    def _activate_focused(self) -> str | None:
+        """Activate whatever the focus indicator is currently on."""
+        if self.focused < len(self.options):
+            result = self.options[self.focused]
+            self.set_result(result)
+            return result
+        # Focus on Custom slot.
+        if self.allow_custom and self.focused == len(self.options):
+            self.in_custom_input_mode = True
+            self.custom_text = ''
+            return None
+        return None
+
+    def handle_click(self, x: int, y: int, button_state: int) -> None:
+        """Click on a list item activates it (or enters Custom mode)."""
+        if not (button_state & curses.BUTTON1_CLICKED):
+            return
+        if self.in_custom_input_mode:
+            # No clickable widgets in custom-input mode (v1).
+            return
+        for x_start, x_end, row_y, target in self.option_positions:
+            if y == row_y and x_start <= x < x_end:
+                if target == 'custom':
+                    self.focused = len(self.options)
+                    self.in_custom_input_mode = True
+                    self.custom_text = ''
+                    return
+                # `target` is the 0-based option index.
+                self.focused = target
+                self.set_result(self.options[target])
+                return
 
     def _handle_custom_input_key(self, key: int) -> str | None:
         """Handle key in custom input mode.
@@ -723,6 +981,7 @@ class SelectionDialog:
     ) -> None:
         """Render the selection list mode."""
         frame = _render_dialog_frame(width, self.title)
+        self.option_positions.clear()
 
         # Top border
         safe_addstr(stdscr, start_y, start_x, frame['top'], dialog_attr)
@@ -735,18 +994,29 @@ class SelectionDialog:
         # Separator
         safe_addstr(stdscr, start_y + 2, start_x, frame['separator'], dialog_attr)
 
-        # Options
+        # Options. Highlight the focused row with A_REVERSE so keyboard
+        # arrow navigation has a visible cursor (issue #16).
         line_y = start_y + 3
         for i, opt in enumerate(self.options, 1):
             content = f'│  {i}. {opt}'.ljust(width - 1) + '│'
-            safe_addstr(stdscr, line_y, start_x, content, dialog_attr)
+            attr = dialog_attr | (curses.A_REVERSE if self.focused == i - 1 else 0)
+            safe_addstr(stdscr, line_y, start_x, content, attr)
+            self.option_positions.append(
+                (start_x + 1, start_x + width - 1, line_y, i - 1)
+            )
             line_y += 1
 
         # Custom option
         if self.allow_custom:
             num = len(self.options) + 1
             content = f'│  {num}. Custom...'.ljust(width - 1) + '│'
-            safe_addstr(stdscr, line_y, start_x, content, dialog_attr)
+            attr = dialog_attr | (
+                curses.A_REVERSE if self.focused == len(self.options) else 0
+            )
+            safe_addstr(stdscr, line_y, start_x, content, attr)
+            self.option_positions.append(
+                (start_x + 1, start_x + width - 1, line_y, 'custom')
+            )
             line_y += 1
 
         # Empty line
@@ -755,7 +1025,7 @@ class SelectionDialog:
 
         # Hint line
         max_num = len(self.options) + (1 if self.allow_custom else 0)
-        hint = f'Press 1-{max_num} or [Esc] to cancel'
+        hint = f'1-{max_num}, arrows + Enter, or click  [Esc] to cancel'
         safe_addstr(stdscr, line_y, start_x, frame['content_line'](hint), dialog_attr)
         line_y += 1
 
@@ -809,28 +1079,8 @@ class SelectionDialog:
 
         stdscr.refresh()
 
-    def show(self, stdscr: Any) -> str | None:
-        """Show the dialog and handle input until a choice is made.
-
-        Args:
-            stdscr: Curses window.
-
-        Returns:
-            Selected option string, or None if cancelled.
-        """
-        while True:
-            self.render(stdscr)
-            key = stdscr.getch()
-            result = self.handle_key(key)
-
-            # In selection mode, None from number keys means continue
-            # But None from Escape means cancel
-            if result is not None:
-                return result
-
-            # Check if we got Escape (key 27) outside custom mode
-            if not self.in_custom_input_mode and key == 27:
-                return None
+    # show() is inherited from Modal; the loop drives render → getch →
+    # handle_key / handle_click and terminates when set_result fires.
 
 
 # Permission bit names in grid order (3 rows x 3 cols)
@@ -844,11 +1094,16 @@ _GRID_BITS = [
 _SPECIAL_BITS = ['setuid', 'setgid', 'sticky']
 
 
-class ChmodDialog:
+class ChmodDialog(Modal):
     """Dialog for changing file permissions.
 
     Displays a checkbox grid for rwx permissions and special bits,
     with live octal mode preview.
+
+    Issue #16: subclasses :class:`Modal` so it inherits mouse routing.
+    Click on any checkbox toggles it (and moves focus there); click on
+    OK / Cancel activates them. All existing keyboard navigation
+    (arrows, Tab, Space, Enter, Esc) is preserved.
     """
 
     def __init__(
@@ -870,6 +1125,7 @@ class ChmodDialog:
         """
         from tnc.permissions import TriState, get_permission_bits
 
+        super().__init__()
         self.file_count = file_count
         self.has_directory = has_directory
         self.filename = filename
@@ -881,6 +1137,13 @@ class ChmodDialog:
         self.focus_section = 'grid'  # 'grid', 'special', 'recursive', 'buttons'
         self.button_focus = 0  # 0=OK, 1=Cancel
         self.cancelled = False
+        # Click hit regions populated during render(). Each entry is
+        # (x_start, x_end, y, action_id) where action_id is one of:
+        #   'grid:<row>:<col>'   (e.g. 'grid:0:0' = owner_read)
+        #   'special:<col>'      (e.g. 'special:0' = setuid)
+        #   'recursive'
+        #   'ok' | 'cancel'
+        self._click_targets: list[tuple[int, int, int, str]] = []
 
         # Initialize bit states
         self._bit_states: dict[str, TriState] = {}
@@ -935,6 +1198,11 @@ class ChmodDialog:
     def handle_key(self, key: int) -> int | None:
         """Handle a keypress.
 
+        Returns the resulting mode int when OK is activated, None
+        otherwise (continuing or cancelled). Also calls
+        :meth:`Modal.set_result` so the inherited :meth:`Modal.show` loop
+        terminates correctly.
+
         Args:
             key: Key code from curses.
 
@@ -946,6 +1214,7 @@ class ChmodDialog:
         # Escape cancels
         if key == 27:
             self.cancelled = True
+            self.set_result(None)
             return None
 
         # Navigation
@@ -998,9 +1267,12 @@ class ChmodDialog:
         elif key in (curses.KEY_ENTER, ord('\n'), ord('\r')):
             if self.focus_section == 'buttons':
                 if self.button_focus == 0:  # OK
-                    return self.get_result_mode()
+                    mode = self.get_result_mode()
+                    self.set_result(mode)
+                    return mode
                 else:  # Cancel
                     self.cancelled = True
+                    self.set_result(None)
                     return None
             else:
                 # Enter on checkbox toggles it
@@ -1026,6 +1298,43 @@ class ChmodDialog:
                 self.focus_section = 'grid'
 
         return None  # Continue dialog
+
+    def handle_click(self, x: int, y: int, button_state: int) -> None:
+        """Click on any registered hit region: toggle / activate (#16)."""
+        if not (button_state & curses.BUTTON1_CLICKED):
+            return
+        for x_start, x_end, target_y, action_id in self._click_targets:
+            if y == target_y and x_start <= x < x_end:
+                self._activate_action(action_id)
+                return
+
+    def _activate_action(self, action_id: str) -> None:
+        """Apply the side effect of clicking the given hit region."""
+        if action_id == 'ok':
+            mode = self.get_result_mode()
+            self.set_result(mode)
+            return
+        if action_id == 'cancel':
+            self.cancelled = True
+            self.set_result(None)
+            return
+        if action_id == 'recursive':
+            self.focus_section = 'recursive'
+            self.toggle_recursive()
+            return
+        if action_id.startswith('grid:'):
+            _, row, col = action_id.split(':')
+            self.focus_section = 'grid'
+            self.cursor_row = int(row)
+            self.cursor_col = int(col)
+            self.toggle_current()
+            return
+        if action_id.startswith('special:'):
+            _, col = action_id.split(':')
+            self.focus_section = 'special'
+            self.cursor_col = int(col)
+            self.toggle_current()
+            return
 
     def get_result_mode(self) -> int:
         """Calculate mode from current bit states.
@@ -1081,6 +1390,9 @@ class ChmodDialog:
         dialog_attr = get_attr(PAIR_DIALOG)
         title_attr = get_attr(PAIR_DIALOG_TITLE)
 
+        # Reset click hit-regions; populated as we render each focusable element.
+        self._click_targets.clear()
+
         # Draw border and title
         title = 'Change Permissions'
         top_border = '┌─ ' + title + ' ' + '─' * (width - len(title) - 5) + '┐'
@@ -1108,7 +1420,14 @@ class ChmodDialog:
         self._draw_line(win, line_y, start_x, width, header, dialog_attr)
         line_y += 1
 
-        # Permission grid
+        # Permission grid. Each cell has the layout
+        #   [2-space pad][label 6][col0 9-char chunk][col1 9-char chunk][col2]
+        # where each col chunk is "  <5-char-checkbox>  ". The line itself is
+        # prefixed by '│ ' (2 chars) inside the start_x offset (see _draw_line).
+        # So col_idx N's checkbox visible region starts at:
+        #   start_x + 2 (border) + 2 (pad) + 6 (label) + N*9 + 2 (chunk pad) + 1 (>/space)
+        # = start_x + 13 + N*9. The clickable bracketed checkbox is 5 chars
+        # ('>[x]<' or ' [x] ').
         row_labels = ['Owner', 'Group', 'Other']
         for row_idx, label in enumerate(row_labels):
             row_text = f'  {label:6}'
@@ -1127,6 +1446,12 @@ class ChmodDialog:
 
                 row_text += f'  {checkbox}  '
 
+                # Record click hit region (the visible 5-char checkbox span).
+                cb_x = start_x + 13 + col_idx * 9
+                self._click_targets.append(
+                    (cb_x, cb_x + 5, line_y, f'grid:{row_idx}:{col_idx}')
+                )
+
             self._draw_line(win, line_y, start_x, width, row_text, dialog_attr)
             line_y += 1
 
@@ -1134,7 +1459,12 @@ class ChmodDialog:
         self._draw_line(win, line_y, start_x, width, '', dialog_attr)
         line_y += 1
 
-        # Special bits row
+        # Special bits row. Layout:
+        #   '  Special:' (10 chars) then per-column 14 chars:
+        #       focused:    '  >[x]< Set UID' (15-char-ish; actually 2 pad + 5 cb + 1 sp + 7 label = 15)
+        #       unfocused:  '   [x]  Set UID' (3 pad + 3 cb + 2 pad + 7 label = 15)
+        # We track checkbox span = 5 chars (the bracketed cell).
+        # column_x = start_x + 2 (border) + 10 (label) + col_idx * 15 + 2 (pad)
         special_text = '  Special:'
         special_labels = ['Set UID', 'Set GID', 'Sticky']
         for col_idx, (bit_name, label) in enumerate(zip(_SPECIAL_BITS, special_labels)):
@@ -1145,6 +1475,11 @@ class ChmodDialog:
                 special_text += f'  >{checkbox}< {label}'
             else:
                 special_text += f'   {checkbox}  {label}'
+
+            cb_x = start_x + 12 + col_idx * 15
+            self._click_targets.append(
+                (cb_x, cb_x + 5, line_y, f'special:{col_idx}')
+            )
 
         self._draw_line(win, line_y, start_x, width, special_text, dialog_attr)
         line_y += 1
@@ -1158,7 +1493,10 @@ class ChmodDialog:
         self._draw_line(win, line_y, start_x, width, f'  Mode: {octal}', dialog_attr)
         line_y += 1
 
-        # Recursive option (only for directories)
+        # Recursive option (only for directories). Layout matches Special:
+        #   focused:    '  >[x]< Apply recursively'  (cb at offset 2)
+        #   unfocused:  '   [x]  Apply recursively'  (cb at offset 3)
+        # cb hit-region anchors at start_x + 4 (border 2 + pad 2) and is 5 wide.
         if self.has_directory:
             self._draw_line(win, line_y, start_x, width, '', dialog_attr)
             line_y += 1
@@ -1168,6 +1506,9 @@ class ChmodDialog:
                 recursive_text = f'  >{checkbox}< Apply recursively'
             else:
                 recursive_text = f'   {checkbox}  Apply recursively'
+            self._click_targets.append(
+                (start_x + 4, start_x + 9, line_y, 'recursive')
+            )
             self._draw_line(win, line_y, start_x, width, recursive_text, dialog_attr)
             line_y += 1
 
@@ -1175,11 +1516,23 @@ class ChmodDialog:
         self._draw_line(win, line_y, start_x, width, '', dialog_attr)
         line_y += 1
 
-        # Buttons
+        # Buttons. The full button text is centered within (width - 4) chars.
         ok_btn = '[  OK  ]' if self.focus_section != 'buttons' or self.button_focus != 0 else '[ >OK< ]'
         cancel_btn = '[Cancel]' if self.focus_section != 'buttons' or self.button_focus != 1 else '[>Cancel<]'
-        buttons = f'{ok_btn}  {cancel_btn}'.center(width - 4)
+        button_pair = f'{ok_btn}  {cancel_btn}'
+        buttons = button_pair.center(width - 4)
         self._draw_line(win, line_y, start_x, width, buttons, dialog_attr)
+
+        # Compute button hit-regions from the centered string. _draw_line
+        # adds '│ ' (2-char prefix) at start_x, so the centered text starts
+        # at start_x + 2 + leading_padding.
+        leading_pad = (width - 4 - len(button_pair)) // 2
+        ok_x_start = start_x + 2 + leading_pad
+        ok_x_end = ok_x_start + len(ok_btn)
+        cancel_x_start = ok_x_end + 2  # 2 spaces between buttons
+        cancel_x_end = cancel_x_start + len(cancel_btn)
+        self._click_targets.append((ok_x_start, ok_x_end, line_y, 'ok'))
+        self._click_targets.append((cancel_x_start, cancel_x_end, line_y, 'cancel'))
         line_y += 1
 
         # Bottom border
@@ -1209,26 +1562,8 @@ class ChmodDialog:
         else:
             return '[ ]'
 
-    def show(self, win: Any) -> int | None:
-        """Show dialog and handle input until done.
-
-        Args:
-            win: Curses window.
-
-        Returns:
-            New mode (int) or None if cancelled.
-        """
-        while True:
-            self.render(win)
-            key = win.getch()
-            result = self.handle_key(key)
-
-            if result is not None:
-                return result
-
-            # Check if cancelled (Escape or Cancel button)
-            if self.cancelled:
-                return None
+    # show() inherited from Modal; the loop drives render → getch → handle_key
+    # / handle_click and terminates when set_result fires.
 
 
 def chmod_dialog(
@@ -1266,10 +1601,15 @@ def chmod_dialog(
     return None
 
 
-class ChownDialog:
+class ChownDialog(Modal):
     """Dialog for changing file ownership.
 
     Displays text input fields for owner and group with autocomplete.
+
+    Issue #16: subclasses :class:`Modal` for mouse routing. Click on the
+    owner field, group field, OK, or Cancel does the obvious thing while
+    all existing keyboard navigation (Tab, arrows, Enter, Esc) is
+    preserved.
     """
 
     def __init__(
@@ -1293,6 +1633,7 @@ class ChownDialog:
         """
         from tnc.permissions import get_system_users, get_system_groups
 
+        super().__init__()
         self.file_count = file_count
         self.filename = filename
         self.owner_input = current_owner
@@ -1308,6 +1649,10 @@ class ChownDialog:
         self.cursor_pos = len(current_owner)
         self.autocomplete_index = -1  # -1 means no selection
         self.button_focus = 0  # 0=OK, 1=Cancel
+        # Click hit regions populated during render(); see ChmodDialog for the
+        # same pattern. Action ids used here:
+        #   'owner_field' | 'group_field' | 'ok' | 'cancel'.
+        self._click_targets: list[tuple[int, int, int, str]] = []
 
     def get_autocomplete_suggestions(self) -> list[str]:
         """Get autocomplete suggestions for current field."""
@@ -1322,6 +1667,10 @@ class ChownDialog:
     def handle_key(self, key: int) -> bool:
         """Handle a keypress.
 
+        Returns True when the dialog should close (back-compat with
+        existing tests). Also calls :meth:`Modal.set_result` so the
+        inherited :meth:`Modal.show` loop terminates correctly.
+
         Args:
             key: Key code from curses.
 
@@ -1333,6 +1682,7 @@ class ChownDialog:
         # Escape cancels
         if key == 27:
             self.cancelled = True
+            self.set_result(None)
             return True
 
         # Tab switches fields
@@ -1392,6 +1742,9 @@ class ChownDialog:
             elif self.active_field == 'buttons':
                 if self.button_focus == 1:  # Cancel
                     self.cancelled = True
+                    self.set_result(None)
+                else:
+                    self.set_result(self.get_result())
                 return True  # Close dialog
             else:
                 # Move to next field
@@ -1428,6 +1781,35 @@ class ChownDialog:
 
         return False
 
+    def handle_click(self, x: int, y: int, button_state: int) -> None:
+        """Click on a registered hit region: focus field or activate button (#16)."""
+        if not (button_state & curses.BUTTON1_CLICKED):
+            return
+        for x_start, x_end, target_y, action_id in self._click_targets:
+            if y == target_y and x_start <= x < x_end:
+                self._activate_action(action_id)
+                return
+
+    def _activate_action(self, action_id: str) -> None:
+        """Apply the side effect of clicking the given hit region."""
+        if action_id == 'ok':
+            self.set_result(self.get_result())
+            return
+        if action_id == 'cancel':
+            self.cancelled = True
+            self.set_result(None)
+            return
+        if action_id == 'owner_field':
+            self.active_field = 'owner'
+            self.cursor_pos = len(self.owner_input)
+            self.autocomplete_index = -1
+            return
+        if action_id == 'group_field':
+            self.active_field = 'group'
+            self.cursor_pos = len(self.group_input)
+            self.autocomplete_index = -1
+            return
+
     def get_result(self) -> tuple[str, str]:
         """Get current owner and group values."""
         return (self.owner_input, self.group_input)
@@ -1453,6 +1835,9 @@ class ChownDialog:
         dialog_attr = get_attr(PAIR_DIALOG)
         title_attr = get_attr(PAIR_DIALOG_TITLE)
 
+        # Reset click hit-regions; rebuild as we render.
+        self._click_targets.clear()
+
         # Draw border and title
         title = 'Change Ownership'
         top_border = '┌─ ' + title + ' ' + '─' * (width - len(title) - 5) + '┐'
@@ -1475,11 +1860,17 @@ class ChownDialog:
         self._draw_line(win, line_y, start_x, width, '', dialog_attr)
         line_y += 1
 
-        # Owner field
+        # Owner field. _draw_line prefixes '│ ' (2 chars) at start_x. The
+        # content '  Owner: [<input padded to 20>]' puts the bracketed
+        # field at offset 2(border)+2(pad)+7(label) = 11. The field span
+        # including brackets is 22 chars (1 + 20 + 1).
         owner_label = 'Owner: '
         owner_field = self.owner_input + ('_' if self.active_field == 'owner' else '')
         owner_line = f'  {owner_label}[{owner_field.ljust(20)}]'
         self._draw_line(win, line_y, start_x, width, owner_line, dialog_attr)
+        self._click_targets.append(
+            (start_x + 11, start_x + 33, line_y, 'owner_field')
+        )
         line_y += 1
 
         # Autocomplete for owner
@@ -1494,11 +1885,14 @@ class ChownDialog:
         self._draw_line(win, line_y, start_x, width, '', dialog_attr)
         line_y += 1
 
-        # Group field
+        # Group field — same geometry as Owner.
         group_label = 'Group: '
         group_field = self.group_input + ('_' if self.active_field == 'group' else '')
         group_line = f'  {group_label}[{group_field.ljust(20)}]'
         self._draw_line(win, line_y, start_x, width, group_line, dialog_attr)
+        self._click_targets.append(
+            (start_x + 11, start_x + 33, line_y, 'group_field')
+        )
         line_y += 1
 
         # Autocomplete for group
@@ -1522,11 +1916,19 @@ class ChownDialog:
         self._draw_line(win, line_y, start_x, width, '', dialog_attr)
         line_y += 1
 
-        # Buttons
+        # Buttons. Same hit-region math as ChmodDialog.
         ok_btn = '[  OK  ]' if self.active_field != 'buttons' or self.button_focus != 0 else '[ >OK< ]'
         cancel_btn = '[Cancel]' if self.active_field != 'buttons' or self.button_focus != 1 else '[>Cancel<]'
-        buttons = f'{ok_btn}  {cancel_btn}'.center(width - 4)
+        button_pair = f'{ok_btn}  {cancel_btn}'
+        buttons = button_pair.center(width - 4)
         self._draw_line(win, line_y, start_x, width, buttons, dialog_attr)
+        leading_pad = (width - 4 - len(button_pair)) // 2
+        ok_x_start = start_x + 2 + leading_pad
+        ok_x_end = ok_x_start + len(ok_btn)
+        cancel_x_start = ok_x_end + 2
+        cancel_x_end = cancel_x_start + len(cancel_btn)
+        self._click_targets.append((ok_x_start, ok_x_end, line_y, 'ok'))
+        self._click_targets.append((cancel_x_start, cancel_x_end, line_y, 'cancel'))
         line_y += 1
 
         # Bottom border
@@ -1546,19 +1948,8 @@ class ChownDialog:
         except curses.error:
             pass
 
-    def show(self, win: Any) -> tuple[str, str] | None:
-        """Show dialog and handle input until done.
-
-        Returns:
-            Tuple of (owner, group) or None if cancelled.
-        """
-        while True:
-            self.render(win)
-            key = win.getch()
-            if self.handle_key(key):
-                if self.cancelled:
-                    return None
-                return self.get_result()
+    # show() inherited from Modal; the loop drives render → getch → handle_key
+    # / handle_click and terminates when set_result fires.
 
 
 def chown_dialog(
@@ -1590,12 +1981,17 @@ def chown_dialog(
     return dialog.show(win)
 
 
-class InputDialog:
+class InputDialog(Modal):
     """A modal text input dialog with full editing support.
 
-    Displays a centered dialog box with a title, prompt text, and an
-    editable text field. Supports cursor movement (arrows, Home/End),
-    character deletion (Backspace, Delete), and text insertion at cursor.
+    Displays a centered dialog box with a title, prompt text, an editable
+    text field, and an OK / Cancel button row. Supports cursor movement
+    (arrows, Home/End), character deletion (Backspace, Delete), and text
+    insertion at cursor.
+
+    Issue #16: subclasses :class:`Modal` so it inherits mouse routing.
+    Click in the text field repositions the cursor; click OK/Cancel
+    activates them. Existing typing/Enter/Esc behaviour is preserved.
 
     Attributes:
         title: Dialog title displayed in the title bar.
@@ -1619,13 +2015,34 @@ class InputDialog:
             prompt: Prompt text shown above input field.
             default_value: Initial text in the input field.
         """
+        super().__init__()
         self.title = title
         self.prompt = prompt
         self.text = default_value
         self.cursor_pos = len(default_value)
+        # Coordinates cached during render() for click hit-testing.
+        self._field_y: int = -1
+        self._field_x_start: int = -1
+        self._field_x_end: int = -1
+        self._visible_start: int = 0
+        # OK/Cancel buttons. The OK value is the sentinel `'<OK>'`; the
+        # actual returned text is read from `self.text` when OK fires.
+        # (We can't put `self.text` in the Button at construction time
+        # because text changes as the user types.)
+        self.button_bar = ButtonBar(
+            buttons=[
+                Button(label='OK', shortcut='', value='<OK>'),
+                Button(label='Cancel', shortcut='', value='<CANCEL>'),
+            ],
+            focused=0,
+        )
 
     def handle_key(self, key: int) -> str | None:
-        """Handle a keypress and return result if dialog should close.
+        """Handle a keypress.
+
+        Returns the entered text (or empty) on Enter for back-compat with
+        existing tests. Internally also calls :meth:`Modal.set_result` so
+        the inherited :meth:`Modal.show` loop terminates correctly.
 
         Args:
             key: Key code from curses.
@@ -1633,15 +2050,16 @@ class InputDialog:
         Returns:
             - str: The input text (Enter pressed). May be empty.
             - None: Dialog should continue (character typed, cursor moved)
-              or dialog was cancelled (Escape). Callers should check the
-              key value to distinguish; see show() for the pattern.
+              or was cancelled (Escape).
         """
         # Enter confirms
         if key in (ord('\n'), ord('\r'), curses.KEY_ENTER):
+            self.set_result(self.text)
             return self.text
 
         # Escape cancels
         if key == 27:
+            self.set_result(None)
             return None
 
         # Backspace
@@ -1692,6 +2110,28 @@ class InputDialog:
 
         return None
 
+    def handle_click(self, x: int, y: int, button_state: int) -> None:
+        """Click in the field repositions the cursor; click on a button activates it."""
+        if not (button_state & curses.BUTTON1_CLICKED):
+            return
+        # Click on OK / Cancel button.
+        value = self.button_bar.hit_test(x, y)
+        if value == '<OK>':
+            self.set_result(self.text)
+            return
+        if value == '<CANCEL>':
+            self.set_result(None)
+            return
+        # Click in the input field row → reposition cursor.
+        if (
+            y == self._field_y
+            and self._field_x_start <= x < self._field_x_end
+        ):
+            click_offset = x - self._field_x_start  # 0-based within visible
+            new_pos = self._visible_start + click_offset
+            new_pos = max(0, min(new_pos, len(self.text)))
+            self.cursor_pos = new_pos
+
     def render(self, stdscr: Any) -> None:
         """Render the dialog to the screen.
 
@@ -1727,8 +2167,6 @@ class InputDialog:
             input_display,
             '',
         ]
-
-        footer = '[Enter] OK  [Esc] Cancel'
 
         # Height: top + title + sep + empty + lines + footer_sep + footer + bottom
         height = 5 + len(lines) + 2
@@ -1768,16 +2206,26 @@ class InputDialog:
         footer_y = y + 4 + len(lines)
         safe_addstr(stdscr, footer_y, x, frame['separator'], dialog_attr)
 
-        # Footer
-        safe_addstr(stdscr, footer_y + 1, x,
-                    frame['content_line'](footer), dialog_attr)
+        # OK / Cancel button bar (replaces the old "[Enter] OK [Esc] Cancel"
+        # static hint). Issue #16: clickable + arrow-focusable buttons.
+        self.button_bar.render(
+            stdscr, y=footer_y + 1, x_start=x + 1, total_width=width - 2,
+            base_attr=dialog_attr,
+        )
 
         # Bottom border
         safe_addstr(stdscr, footer_y + 2, x, frame['bottom'], dialog_attr)
 
+        # Cache field coordinates for click-to-reposition (issue #16).
+        # Visible text starts after "│ > " (4 chars in).
+        self._field_y = y + 5
+        self._field_x_start = x + 4
+        self._field_x_end = x + 4 + max_text_len
+        self._visible_start = visible_start
+
         # Position cursor on the input field for visual feedback
-        cursor_y = y + 5  # Input line (prompt is y+4, input is y+5)
-        cursor_x = x + 4 + cursor_visual  # "│ > " = 4 chars offset
+        cursor_y = y + 5
+        cursor_x = self._field_x_start + cursor_visual
         try:
             stdscr.move(cursor_y, cursor_x)
         except curses.error:
@@ -1788,27 +2236,16 @@ class InputDialog:
     def show(self, stdscr: Any) -> str | None:
         """Show the dialog and handle input until confirmed or cancelled.
 
-        Args:
-            stdscr: Curses window.
-
-        Returns:
-            The entered text string on Enter, or None if cancelled (Escape).
+        Wraps the inherited :meth:`Modal.show` with a ``curs_set(1)`` /
+        ``curs_set(0)`` pair so the input cursor is visible while the
+        field has focus, and hidden again on exit.
         """
         try:
             curses.curs_set(1)
         except curses.error:
             pass
         try:
-            while True:
-                self.render(stdscr)
-                key = stdscr.getch()
-                result = self.handle_key(key)
-
-                if result is not None:
-                    return result
-
-                if key == 27:
-                    return None
+            return super().show(stdscr)
         finally:
             try:
                 curses.curs_set(0)

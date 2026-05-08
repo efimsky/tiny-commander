@@ -146,5 +146,86 @@ class TestChownDialogResult(unittest.TestCase):
         self.assertEqual(result, ('alice', 'staff'))
 
 
+class TestChownDialogMouse(unittest.TestCase):
+    """Issue #16: ChownDialog gains click on owner field, group field, OK,
+    and Cancel."""
+
+    def _setup(self):
+        d = ChownDialog(
+            file_count=1,
+            current_owner='alice',
+            current_group='staff',
+            users=['alice', 'bob', 'charlie'],
+            groups=['staff', 'wheel'],
+            filename='file.txt',
+        )
+        win = mock.MagicMock()
+        win.getmaxyx.return_value = (24, 80)
+        return d, win
+
+    def _hit(self, dialog, action_id):
+        for x_start, x_end, y, target in dialog._click_targets:
+            if target == action_id:
+                return ((x_start + x_end) // 2, y)
+        raise AssertionError(f'no click target for {action_id!r}')
+
+    def test_click_on_owner_field_focuses_owner(self):
+        d, win = self._setup()
+        d.active_field = 'group'  # start somewhere else
+        d.render(win)
+        x, y = self._hit(d, 'owner_field')
+        win.getch.side_effect = [curses.KEY_MOUSE, 27]  # click then Esc
+        with mock.patch(
+            'curses.getmouse',
+            return_value=(0, x, y, 0, curses.BUTTON1_CLICKED),
+        ):
+            d.show(win)
+        self.assertEqual(d.active_field, 'owner')
+
+    def test_click_on_group_field_focuses_group(self):
+        d, win = self._setup()
+        d.active_field = 'owner'
+        d.render(win)
+        x, y = self._hit(d, 'group_field')
+        win.getch.side_effect = [curses.KEY_MOUSE, 27]
+        with mock.patch(
+            'curses.getmouse',
+            return_value=(0, x, y, 0, curses.BUTTON1_CLICKED),
+        ):
+            d.show(win)
+        self.assertEqual(d.active_field, 'group')
+
+    def test_click_on_ok_returns_tuple(self):
+        d, win = self._setup()
+        d.render(win)
+        x, y = self._hit(d, 'ok')
+        win.getch.side_effect = [curses.KEY_MOUSE]
+        with mock.patch(
+            'curses.getmouse',
+            return_value=(0, x, y, 0, curses.BUTTON1_CLICKED),
+        ):
+            self.assertEqual(d.show(win), ('alice', 'staff'))
+
+    def test_click_on_cancel_returns_none(self):
+        d, win = self._setup()
+        d.render(win)
+        x, y = self._hit(d, 'cancel')
+        win.getch.side_effect = [curses.KEY_MOUSE]
+        with mock.patch(
+            'curses.getmouse',
+            return_value=(0, x, y, 0, curses.BUTTON1_CLICKED),
+        ):
+            self.assertIsNone(d.show(win))
+
+    def test_existing_tab_navigation_preserved(self):
+        """Regression: Tab still cycles owner → group → buttons."""
+        d, _ = self._setup()
+        self.assertEqual(d.active_field, 'owner')
+        d.handle_key(ord('\t'))
+        self.assertEqual(d.active_field, 'group')
+        d.handle_key(ord('\t'))
+        self.assertEqual(d.active_field, 'buttons')
+
+
 if __name__ == '__main__':
     unittest.main()

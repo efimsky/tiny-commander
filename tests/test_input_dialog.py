@@ -368,5 +368,70 @@ class TestInputDialogConvenienceFunction(unittest.TestCase):
         self.assertEqual(result, 'hello')
 
 
+class TestInputDialogMouse(unittest.TestCase):
+    """Issue #16: InputDialog gains click-on-OK/Cancel and click-in-field
+    cursor repositioning while preserving typing/Enter/Esc behaviour."""
+
+    def _setup(self, default_value=''):
+        d = InputDialog('Title', 'Prompt:', default_value=default_value)
+        win = mock.MagicMock()
+        win.getmaxyx.return_value = (24, 80)
+        return d, win
+
+    def test_click_on_ok_returns_text(self):
+        d, win = self._setup(default_value='hello')
+        d.render(win)
+        ok_entry = next(e for e in d.button_bar.button_positions if e[3] == '<OK>')
+        x_start, x_end, btn_y, _ = ok_entry
+        midx = (x_start + x_end) // 2
+
+        win.getch.side_effect = [curses.KEY_MOUSE]
+        with mock.patch('curses.curs_set'), \
+             mock.patch('curses.getmouse',
+                        return_value=(0, midx, btn_y, 0, curses.BUTTON1_CLICKED)):
+            self.assertEqual(d.show(win), 'hello')
+
+    def test_click_on_cancel_returns_none(self):
+        d, win = self._setup(default_value='hello')
+        d.render(win)
+        cancel_entry = next(
+            e for e in d.button_bar.button_positions if e[3] == '<CANCEL>'
+        )
+        x_start, x_end, btn_y, _ = cancel_entry
+        midx = (x_start + x_end) // 2
+
+        win.getch.side_effect = [curses.KEY_MOUSE]
+        with mock.patch('curses.curs_set'), \
+             mock.patch('curses.getmouse',
+                        return_value=(0, midx, btn_y, 0, curses.BUTTON1_CLICKED)):
+            self.assertIsNone(d.show(win))
+
+    def test_click_in_text_field_repositions_cursor(self):
+        d, win = self._setup(default_value='helloworld')
+        d.render(win)
+        # Click 3 chars into the visible field.
+        click_x = d._field_x_start + 3
+        click_y = d._field_y
+
+        win.getch.side_effect = [curses.KEY_MOUSE, ord('\n')]
+        with mock.patch('curses.curs_set'), \
+             mock.patch('curses.getmouse',
+                        return_value=(0, click_x, click_y, 0, curses.BUTTON1_CLICKED)):
+            d.show(win)
+        # visible_start = 0 at default render, so click offset 3 → cursor 3.
+        self.assertEqual(d.cursor_pos, 3)
+
+    def test_existing_typing_enter_esc_preserved(self):
+        """Regression: Esc returns empty string, Enter accepts default text."""
+        from tnc.dialog import input_dialog
+        win = mock.MagicMock()
+        win.getmaxyx.return_value = (24, 80)
+        with mock.patch('curses.curs_set'):
+            win.getch.return_value = 27
+            self.assertEqual(input_dialog(win, 'T', 'P'), '')
+            win.getch.return_value = ord('\n')
+            self.assertEqual(input_dialog(win, 'T', 'P', default_value='hi'), 'hi')
+
+
 if __name__ == '__main__':
     unittest.main()
