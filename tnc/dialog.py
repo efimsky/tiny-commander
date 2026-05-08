@@ -1837,12 +1837,17 @@ def chown_dialog(
     return dialog.show(win)
 
 
-class InputDialog:
+class InputDialog(Modal):
     """A modal text input dialog with full editing support.
 
-    Displays a centered dialog box with a title, prompt text, and an
-    editable text field. Supports cursor movement (arrows, Home/End),
-    character deletion (Backspace, Delete), and text insertion at cursor.
+    Displays a centered dialog box with a title, prompt text, an editable
+    text field, and an OK / Cancel button row. Supports cursor movement
+    (arrows, Home/End), character deletion (Backspace, Delete), and text
+    insertion at cursor.
+
+    Issue #16: subclasses :class:`Modal` so it inherits mouse routing.
+    Click in the text field repositions the cursor; click OK/Cancel
+    activates them. Existing typing/Enter/Esc behaviour is preserved.
 
     Attributes:
         title: Dialog title displayed in the title bar.
@@ -1866,13 +1871,34 @@ class InputDialog:
             prompt: Prompt text shown above input field.
             default_value: Initial text in the input field.
         """
+        super().__init__()
         self.title = title
         self.prompt = prompt
         self.text = default_value
         self.cursor_pos = len(default_value)
+        # Coordinates cached during render() for click hit-testing.
+        self._field_y: int = -1
+        self._field_x_start: int = -1
+        self._field_x_end: int = -1
+        self._visible_start: int = 0
+        # OK/Cancel buttons. The OK value is the sentinel `'<OK>'`; the
+        # actual returned text is read from `self.text` when OK fires.
+        # (We can't put `self.text` in the Button at construction time
+        # because text changes as the user types.)
+        self.button_bar = ButtonBar(
+            buttons=[
+                Button(label='OK', shortcut='', value='<OK>'),
+                Button(label='Cancel', shortcut='', value='<CANCEL>'),
+            ],
+            focused=0,
+        )
 
     def handle_key(self, key: int) -> str | None:
-        """Handle a keypress and return result if dialog should close.
+        """Handle a keypress.
+
+        Returns the entered text (or empty) on Enter for back-compat with
+        existing tests. Internally also calls :meth:`Modal.set_result` so
+        the inherited :meth:`Modal.show` loop terminates correctly.
 
         Args:
             key: Key code from curses.
@@ -1880,15 +1906,16 @@ class InputDialog:
         Returns:
             - str: The input text (Enter pressed). May be empty.
             - None: Dialog should continue (character typed, cursor moved)
-              or dialog was cancelled (Escape). Callers should check the
-              key value to distinguish; see show() for the pattern.
+              or was cancelled (Escape).
         """
         # Enter confirms
         if key in (ord('\n'), ord('\r'), curses.KEY_ENTER):
+            self.set_result(self.text)
             return self.text
 
         # Escape cancels
         if key == 27:
+            self.set_result(None)
             return None
 
         # Backspace
@@ -1939,6 +1966,28 @@ class InputDialog:
 
         return None
 
+    def handle_click(self, x: int, y: int, button_state: int) -> None:
+        """Click in the field repositions the cursor; click on a button activates it."""
+        if not (button_state & curses.BUTTON1_CLICKED):
+            return
+        # Click on OK / Cancel button.
+        value = self.button_bar.hit_test(x, y)
+        if value == '<OK>':
+            self.set_result(self.text)
+            return
+        if value == '<CANCEL>':
+            self.set_result(None)
+            return
+        # Click in the input field row → reposition cursor.
+        if (
+            y == self._field_y
+            and self._field_x_start <= x < self._field_x_end
+        ):
+            click_offset = x - self._field_x_start  # 0-based within visible
+            new_pos = self._visible_start + click_offset
+            new_pos = max(0, min(new_pos, len(self.text)))
+            self.cursor_pos = new_pos
+
     def render(self, stdscr: Any) -> None:
         """Render the dialog to the screen.
 
@@ -1974,8 +2023,6 @@ class InputDialog:
             input_display,
             '',
         ]
-
-        footer = '[Enter] OK  [Esc] Cancel'
 
         # Height: top + title + sep + empty + lines + footer_sep + footer + bottom
         height = 5 + len(lines) + 2
@@ -2015,16 +2062,25 @@ class InputDialog:
         footer_y = y + 4 + len(lines)
         safe_addstr(stdscr, footer_y, x, frame['separator'], dialog_attr)
 
-        # Footer
-        safe_addstr(stdscr, footer_y + 1, x,
-                    frame['content_line'](footer), dialog_attr)
+        # OK / Cancel button bar (replaces the old "[Enter] OK [Esc] Cancel"
+        # static hint). Issue #16: clickable + arrow-focusable buttons.
+        self.button_bar.render(
+            stdscr, y=footer_y + 1, x_start=x + 1, total_width=width - 2
+        )
 
         # Bottom border
         safe_addstr(stdscr, footer_y + 2, x, frame['bottom'], dialog_attr)
 
+        # Cache field coordinates for click-to-reposition (issue #16).
+        # Visible text starts after "│ > " (4 chars in).
+        self._field_y = y + 5
+        self._field_x_start = x + 4
+        self._field_x_end = x + 4 + max_text_len
+        self._visible_start = visible_start
+
         # Position cursor on the input field for visual feedback
-        cursor_y = y + 5  # Input line (prompt is y+4, input is y+5)
-        cursor_x = x + 4 + cursor_visual  # "│ > " = 4 chars offset
+        cursor_y = y + 5
+        cursor_x = self._field_x_start + cursor_visual
         try:
             stdscr.move(cursor_y, cursor_x)
         except curses.error:
@@ -2035,27 +2091,16 @@ class InputDialog:
     def show(self, stdscr: Any) -> str | None:
         """Show the dialog and handle input until confirmed or cancelled.
 
-        Args:
-            stdscr: Curses window.
-
-        Returns:
-            The entered text string on Enter, or None if cancelled (Escape).
+        Wraps the inherited :meth:`Modal.show` with a ``curs_set(1)`` /
+        ``curs_set(0)`` pair so the input cursor is visible while the
+        field has focus, and hidden again on exit.
         """
         try:
             curses.curs_set(1)
         except curses.error:
             pass
         try:
-            while True:
-                self.render(stdscr)
-                key = stdscr.getch()
-                result = self.handle_key(key)
-
-                if result is not None:
-                    return result
-
-                if key == 27:
-                    return None
+            return super().show(stdscr)
         finally:
             try:
                 curses.curs_set(0)
