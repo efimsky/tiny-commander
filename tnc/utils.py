@@ -38,12 +38,12 @@ def format_size(size: int) -> str:
     if size < 1024:
         return str(size)
 
-    for unit in ['K', 'M', 'G', 'T']:
+    for unit in ['K', 'M', 'G', 'T', 'P']:
         size = size / 1024
         if size < 1024:
             return f'{size:.1f}{unit}'
 
-    return f'{size:.1f}P'
+    return f'{size / 1024:.1f}E'
 
 
 def format_permissions(mode: int) -> str:
