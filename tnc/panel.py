@@ -115,6 +115,7 @@ class Panel:
             height: Panel height in characters.
         """
         self.path = Path(path).resolve()
+        self._resolved_path = self.path
         self.width = width
         self.height = height
         self.is_active = False
@@ -162,6 +163,8 @@ class Panel:
 
         self.entries = []
         self.error_message = None
+        need_stat = self.sort_order in ('size', 'date')
+        stat_cache: dict[Path, os.stat_result] = {}
         try:
             # Always add '..' entry first (except at root)
             # path.parent == path is true only at filesystem root
@@ -183,14 +186,19 @@ class Panel:
                     except OSError:
                         is_dir = False
                     p = Path(entry.path)
+                    if need_stat:
+                        try:
+                            stat_cache[p] = entry.stat()
+                        except OSError:
+                            pass
                     if is_dir:
                         dirs.append(p)
                     else:
                         files.append(p)
 
             # Sort both lists according to current sort order
-            dirs = self._sort_entries(dirs)
-            files = self._sort_entries(files)
+            dirs = self._sort_entries(dirs, stat_cache=stat_cache if need_stat else None)
+            files = self._sort_entries(files, stat_cache=stat_cache if need_stat else None)
 
             self.entries.extend(dirs)
             self.entries.extend(files)
@@ -200,6 +208,12 @@ class Panel:
             self.error_message = 'Directory not found'
         except OSError as e:
             self.error_message = str(e)
+
+        self.cursor = max(0, min(self.cursor, max(0, len(self.entries) - 1)))
+        max_scroll = max(0, len(self.entries) - self.visible_rows)
+        self.scroll_offset = max(0, min(self.scroll_offset, max_scroll))
+        self._adjust_scroll()
+        self.selected &= self._selectable_names()
 
     def render(self, win: Any, x: int, y: int) -> None:
         """Render the panel to a curses window.
@@ -310,22 +324,18 @@ class Panel:
         else:
             full_path = self.path / entry
             try:
-                # Use lstat to detect symlinks
+                # Use lstat to detect symlinks; reuse for non-symlinks
                 lstat_info = full_path.lstat()
                 is_symlink = stat.S_ISLNK(lstat_info.st_mode)
 
                 if is_symlink:
-                    # Check if symlink target exists
+                    # Follow symlink once; fall back to lstat if broken
                     try:
-                        full_path.stat()  # Follows symlink
+                        stat_info = full_path.stat()
                     except OSError:
                         is_broken_link = True
-
-                # Get stat info (follows symlinks for size/mtime)
-                try:
-                    stat_info = full_path.stat()
-                except OSError:
-                    # Broken symlink - use lstat info
+                        stat_info = lstat_info
+                else:
                     stat_info = lstat_info
 
                 is_directory = stat.S_ISDIR(stat_info.st_mode)
@@ -420,12 +430,19 @@ class Panel:
         path_str = str(self.path)
 
         # indicator is 2 chars, plus space = 3 chars overhead
-        if max_width:
+        if max_width is not None:
+            if max_width <= 0:
+                return ''
             # Reserve space for indicator and space
             path_max = max_width - 3
+            if path_max <= 0:
+                return indicator[:max_width]
             if len(path_str) > path_max:
-                # Truncate path from the left, keeping the end
-                path_str = '...' + path_str[-(path_max - 3):]
+                if path_max <= 3:
+                    path_str = path_str[-path_max:]
+                else:
+                    # Truncate path from the left, keeping the end
+                    path_str = '...' + path_str[-(path_max - 3):]
 
         return f'{indicator} {path_str}'
 
@@ -444,7 +461,7 @@ class Panel:
     @property
     def visible_rows(self) -> int:
         """Number of file entry rows visible in the panel."""
-        return self.height - 2
+        return max(1, self.height - 2)
 
     def contains_point(self, x: int, y: int) -> bool:
         """Check if a screen coordinate is within this panel's bounds.
@@ -478,8 +495,8 @@ class Panel:
         # Calculate row relative to panel (row 0 is header/border)
         relative_row = y - self.render_y
 
-        # Row 0 is header, entries start at row 1
-        if relative_row < 1:
+        # Row 0 is header/top border, row render_height - 1 is bottom border
+        if relative_row < 1 or relative_row >= self.render_height - 1:
             return None
 
         # Convert to entry index accounting for scroll
@@ -499,11 +516,16 @@ class Panel:
         elif self.cursor >= self.scroll_offset + self.visible_rows:
             self.scroll_offset = self.cursor - self.visible_rows + 1
 
-    def _sort_entries(self, entries: list[Path]) -> list[Path]:
+    def _sort_entries(
+        self,
+        entries: list[Path],
+        stat_cache: dict[Path, os.stat_result] | None = None,
+    ) -> list[Path]:
         """Sort entries according to current sort order and direction.
 
         Args:
             entries: List of Path objects to sort.
+            stat_cache: Optional per-refresh stat results keyed by Path.
 
         Returns:
             Sorted list of Path objects.
@@ -513,10 +535,18 @@ class Panel:
         match self.sort_order:
             case 'size':
                 # Normal: largest first, reversed: smallest first
-                return sorted(entries, key=self._get_size, reverse=not self.sort_reversed)
+                if stat_cache is not None:
+                    key = lambda p: stat_cache[p].st_size if p in stat_cache else 0
+                else:
+                    key = self._get_size
+                return sorted(entries, key=key, reverse=not self.sort_reversed)
             case 'date':
                 # Normal: newest first, reversed: oldest first
-                return sorted(entries, key=self._get_mtime, reverse=not self.sort_reversed)
+                if stat_cache is not None:
+                    key = lambda p: stat_cache[p].st_mtime if p in stat_cache else 0.0
+                else:
+                    key = self._get_mtime
+                return sorted(entries, key=key, reverse=not self.sort_reversed)
             case 'extension':
                 return sorted(entries, key=self._get_extension_key, reverse=self.sort_reversed)
             case _:
@@ -693,6 +723,7 @@ class Panel:
             self._forward_stack.clear()
 
         self.path = resolved
+        self._resolved_path = resolved
         self.scroll_offset = 0
         self.selected.clear()
         # Note: _dir_size_cache is NOT cleared - it persists for the session
@@ -843,7 +874,7 @@ class Panel:
         if result.success:
             self.refresh()
             # Move cursor to the new entry
-            index = self._find_entry_index(name)
+            index = self._find_entry_index(result.created_name or name)
             if index is not None:
                 self.cursor = index
                 self._adjust_scroll()
@@ -904,10 +935,23 @@ class Panel:
         unmeasured. This catches F5/F6/F8 against the measured dir as
         well as external mutations (issue #46).
         """
-        dir_path = (self.path / name).resolve()
-        entry = self._dir_size_cache.get(dir_path)
-        if entry is None:
+        if not self._dir_size_cache:
             return None
+        candidate = self.path / name
+        entry = self._dir_size_cache.get(candidate)
+        if entry is not None:
+            dir_path = candidate
+        else:
+            if (
+                name not in ('.', '..')
+                and self.path == self._resolved_path
+                and not candidate.is_symlink()
+            ):
+                return None
+            dir_path = candidate.resolve()
+            entry = self._dir_size_cache.get(dir_path)
+            if entry is None:
+                return None
         size, cached_mtime = entry
         try:
             current_mtime = dir_path.stat().st_mtime
@@ -976,8 +1020,8 @@ class Panel:
                 if e.name == '..' or search_lower in e.name.lower()
             ]
 
-        # Position cursor on first match after '..' (or 0 if only '..')
-        self.cursor = 1 if len(self.entries) > 1 else 0
+        # Position cursor on first match after '..' (or 0 if no '..' / only '..')
+        self.cursor = 1 if (len(self.entries) > 1 and self.entries[0].name == '..') else 0
         self.scroll_offset = 0
         self._adjust_scroll()
 

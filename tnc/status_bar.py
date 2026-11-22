@@ -72,7 +72,7 @@ class StatusBar:
                     else:
                         size_str = format_size(stat_info.st_size)
                     perms_str = format_permissions(stat_info.st_mode)
-                    mtime_str = format_mtime(stat_info.st_mtime)
+                    mtime_str = format_mtime(stat_info.st_mtime) if width >= 70 else ''
                 except OSError:
                     size_str = '?'
                     perms_str = '??????????'
