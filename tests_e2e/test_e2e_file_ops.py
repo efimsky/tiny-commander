@@ -765,7 +765,7 @@ class TestMkdirCreateRenameDeleteE2E(_FileOpsE2ECase):
             term.wait_for_text('Toggle hidden')
             term.click_text('Toggle hidden', settle=True)
             term.wait_until(
-                lambda s: len(s.find_all('.prehidden')) == 1,
+                lambda s: not s.contains('Toggle hidden') and len(s.find_all('.prehidden')) == 1,
                 description='left panel hides dotfiles while right keeps showing them',
             )
 

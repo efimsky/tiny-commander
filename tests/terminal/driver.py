@@ -406,7 +406,7 @@ class TerminalDriver:
         """Send literal UTF-8 text input to the PTY."""
         self.send_bytes(text.encode('utf-8'))
 
-    def wait_mouse_settle(self, interval: float = 0.22) -> None:
+    def wait_mouse_settle(self, interval: float = 0.35) -> None:
         """Wait past ncurses mouseinterval so prior clicks do not coalesce."""
         if self._last_click is not None:
             elapsed = time.monotonic() - self._last_click[0]
@@ -429,8 +429,8 @@ class TerminalDriver:
             ts, lx, ly, lbtn = self._last_click
             if (lx, ly, lbtn) == (x, y, btn_int):
                 elapsed = time.monotonic() - ts
-                if elapsed < 0.20:
-                    time.sleep(0.20 - elapsed)
+                if elapsed < 0.28:
+                    time.sleep(0.28 - elapsed)
         self.send_bytes(
             MouseEncoder.encode_click(btn_int, x, y, sgr=self.screen.sgr_mouse)
         )
@@ -444,12 +444,23 @@ class TerminalDriver:
         y: int,
         button: MouseButton | int = MouseButton.LEFT,
         *,
-        interval: float = 0.02,
+        interval: float = 0.0,
     ) -> None:
         """Send two rapid clicks so curses synthesizes BUTTON*_DOUBLE_CLICKED."""
+        btn_int = int(button)
+        if interval <= 0:
+            if self._last_click is not None:
+                ts, lx, ly, lbtn = self._last_click
+                if (lx, ly, lbtn) == (x, y, btn_int):
+                    elapsed = time.monotonic() - ts
+                    if elapsed < 0.28:
+                        time.sleep(0.28 - elapsed)
+            seq = MouseEncoder.encode_click(btn_int, x, y, sgr=self.screen.sgr_mouse)
+            self.send_bytes(seq * 2)
+            self._last_click = (time.monotonic(), x, y, btn_int)
+            return
         self.click(x, y, button, prevent_double_click_collapse=True)
-        if interval > 0:
-            time.sleep(interval)
+        time.sleep(interval)
         self.click(x, y, button, prevent_double_click_collapse=False)
 
     def click_text(
@@ -525,6 +536,12 @@ class TerminalDriver:
                     os.killpg(self._proc.pid, signal.SIGTERM)
                 except ProcessLookupError:
                     pass
+                except PermissionError:
+                    if self._proc.poll() is None:
+                        try:
+                            self._proc.terminate()
+                        except (ProcessLookupError, PermissionError, OSError):
+                            pass
                 try:
                     self._proc.wait(timeout=sigterm_timeout)
                 except subprocess.TimeoutExpired:
@@ -538,6 +555,12 @@ class TerminalDriver:
                         os.killpg(self._proc.pid, signal.SIGKILL)
                     except ProcessLookupError:
                         pass
+                    except PermissionError:
+                        if self._proc.poll() is None:
+                            try:
+                                self._proc.kill()
+                            except (ProcessLookupError, PermissionError, OSError):
+                                pass
                     try:
                         self._proc.wait(timeout=3.0)
                     except subprocess.TimeoutExpired:

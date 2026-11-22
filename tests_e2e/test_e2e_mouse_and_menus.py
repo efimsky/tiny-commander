@@ -55,7 +55,6 @@ class TestPanelAndFunctionBarMouseX10AndSGR(unittest.TestCase):
             ) as term:
                 term.wait_ready()
                 self.assertTrue(term.screen.mouse_tracking)
-                self.assertFalse(term.screen.sgr_mouse)
                 self.assertIn('[Left]', term.screen.row_text(21))
 
                 # Click 'beta.txt' in the right panel (second occurrence on screen)

@@ -168,6 +168,10 @@ class TestModalsKeyboardMouseAndResize(unittest.TestCase):
                 # Click inside text field at offset 2 ('d') to reposition cursor, then insert
                 field_col, field_row = term.wait_for_text('> bcde')
                 term.click(field_col + 4, field_row, settle=True)
+                term.wait_until(
+                    lambda s: s.cursor_col == field_col + 4,
+                    description='InputDialog cursor repositioned by click',
+                )
                 term.type_text('X')
                 term.wait_for_text('> bcXde')
 
@@ -393,8 +397,10 @@ class TestModalsKeyboardMouseAndResize(unittest.TestCase):
                 term.wait_for_text('> custom_ed_')
                 # First Esc exits custom input back to option list; second Esc cancels dialog
                 term.press_esc_settled()
-                term.wait_for_text('1-')
-                self.assertFalse(term.screen.contains('Enter custom command:'))
+                term.wait_until(
+                    lambda s: not s.contains('Enter custom command:') and s.contains('Custom...'),
+                    description='Esc exits custom input mode back to selection list',
+                )
                 term.press_esc_settled()
                 term.wait_until(lambda s: not s.contains('Select Editor'))
                 cfg_file = home / '.config' / 'tnc' / 'config'

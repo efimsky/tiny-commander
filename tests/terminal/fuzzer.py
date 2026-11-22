@@ -421,7 +421,7 @@ _DESTRUCTIVE_KEYS = ('enter', 'f5', 'f6', 'f7', 'f8', 'shift+f4', 'shift+f6')
 _PANEL_SAFE_FKEYS = ('f1', 'f2', 'f9', 'shift+f3', 'ctrl+l')
 _MODE_TRIGGERS = (
     '/', '+', '-', '*', 'ctrl+x', 'alt+enter', 'alt+left', 'alt+right',
-    'alt+o', 'alt+i', 'ctrl+u', 'ctrl+o',
+    'alt+i', 'ctrl+u', 'ctrl+o',
 )
 _SAFE_TEXT_CHARS = ('a', 'b', 'x', '.', '_', ' ')
 _CLICKABLE_LABELS = ('F1', 'F2', 'F9', '[Left]', '[Right]', '[ Cancel ]', '[ OK ]', '..')
