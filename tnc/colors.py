@@ -61,6 +61,7 @@ class ColorManager:
         """
         self._colors_enabled = False
         self._classic_theme = classic_theme
+        self._default_colors_ok = True
 
     @property
     def colors_enabled(self) -> bool:
@@ -82,8 +83,17 @@ class ColorManager:
             self._colors_enabled = False
             return False
 
-        curses.start_color()
-        curses.use_default_colors()
+        try:
+            curses.start_color()
+        except curses.error:
+            self._colors_enabled = False
+            return False
+
+        try:
+            curses.use_default_colors()
+            self._default_colors_ok = True
+        except curses.error:
+            self._default_colors_ok = False
 
         self._apply_theme_colors()
 
@@ -108,15 +118,20 @@ class ColorManager:
         else:
             self._apply_modern_theme()
 
-    @staticmethod
-    def _safe_init_pair(pair: int, fg: int, bg: int) -> None:
+    def _safe_init_pair(self, pair: int, fg: int, bg: int) -> None:
         """init_pair that tolerates terminals with limited color-pair support.
 
         On 8-color xterms or other constrained terminals, init_pair can
         raise curses.error part way through the theme. Catching here
         leaves the affected pair at its default (monochrome) and lets
         the rest of the theme apply, instead of crashing startup (#40).
+        If use_default_colors() failed, maps -1 fg/bg to WHITE/BLACK (#111).
         """
+        if not self._default_colors_ok:
+            if fg == -1:
+                fg = curses.COLOR_WHITE
+            if bg == -1:
+                bg = curses.COLOR_BLACK
         try:
             curses.init_pair(pair, fg, bg)
         except curses.error:

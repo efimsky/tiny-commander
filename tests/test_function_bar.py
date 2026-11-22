@@ -94,14 +94,21 @@ class TestFunctionBar(unittest.TestCase):
         """Test that Shift modifier changes displayed labels."""
         bar = FunctionBar()
         bar.set_modifier(ModifierState.SHIFT)
-        mock_win = MagicMock()
 
-        bar.render(mock_win, y=24, width=80)
+        # At width=100 (cell_width=10), full 'Create' fits within F4's cell.
+        mock_win_wide = MagicMock()
+        bar.render(mock_win_wide, y=24, width=100)
+        wide_text = self._get_all_rendered_text(mock_win_wide)
+        self.assertIn('Sort', wide_text)
+        self.assertIn('Create', wide_text)
 
-        rendered_text = self._get_all_rendered_text(mock_win)
-        # Should show Shift labels for modified keys
-        self.assertIn('Sort', rendered_text)
-        self.assertIn('Create', rendered_text)
+        # At width=80 (cell_width=8), ' F4Create' (9 chars) clips to 'Creat'.
+        mock_win_80 = MagicMock()
+        bar.render(mock_win_80, y=24, width=80)
+        narrow_text = self._get_all_rendered_text(mock_win_80)
+        self.assertIn('Sort', narrow_text)
+        self.assertIn('Creat', narrow_text)
+        self.assertNotIn('Create', narrow_text)
 
     def test_render_alt_modifier(self) -> None:
         """Test that Alt modifier changes displayed labels."""
