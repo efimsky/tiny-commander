@@ -38,7 +38,8 @@ jobs:
       
       - name: Sync docs to wiki
         run: |
-          # Copy all markdown files from docs to wiki
+          # Replace wiki contents from docs while preserving wiki/.git
+          find wiki -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
           cp -r docs/* wiki/
           
           cd wiki
@@ -47,14 +48,16 @@ jobs:
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
           
+          # Stage all changes (including new and deleted files) before checking diff
+          git add -A
+          
           # Check if there are changes
-          if git diff --quiet && git diff --cached --quiet; then
+          if git diff --cached --quiet; then
             echo "No changes to sync"
             exit 0
           fi
           
           # Commit and push
-          git add -A
           git commit -m "Sync docs from main branch"
           git push origin master || git push origin main
         env:
