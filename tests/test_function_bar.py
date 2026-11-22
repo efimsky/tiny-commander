@@ -17,7 +17,7 @@ class TestFunctionBar(unittest.TestCase):
         self.assertEqual(labels['F3'], 'View')
         self.assertEqual(labels['F4'], 'Edit')
         self.assertEqual(labels['F5'], 'Copy')
-        self.assertEqual(labels['F6'], 'Move')
+        self.assertEqual(labels['F6'], 'RenMov')
         self.assertEqual(labels['F7'], 'Mkdir')
         self.assertEqual(labels['F8'], 'Delete')
         self.assertEqual(labels['F9'], 'Menu')
@@ -109,6 +109,27 @@ class TestFunctionBar(unittest.TestCase):
         self.assertIn('Sort', narrow_text)
         self.assertIn('Creat', narrow_text)
         self.assertNotIn('Create', narrow_text)
+
+    def test_render_f6_renmov_wide_and_80_col_clip(self) -> None:
+        """F6 renders full 'RenMov' at width=100 and clips cleanly to 'RenMo' at width=80."""
+        bar = FunctionBar()
+
+        mock_win_wide = MagicMock()
+        bar.render(mock_win_wide, y=24, width=100)
+        wide_text = self._get_all_rendered_text(mock_win_wide)
+        self.assertIn('RenMov', wide_text)
+
+        mock_win_80 = MagicMock()
+        bar.render(mock_win_80, y=24, width=80)
+        f6_draws = [
+            (call_obj[0][1], call_obj[0][2])
+            for call_obj in mock_win_80.addstr.call_args_list
+            if len(call_obj[0]) >= 3 and 40 <= call_obj[0][1] < 48
+            and not (call_obj[0][1] == 0 and len(call_obj[0][2]) == 80)
+        ]
+        self.assertEqual(f6_draws, [(40, ' F6'), (43, 'RenMo')])
+        for x_pos, text in f6_draws:
+            self.assertLessEqual(x_pos + len(text), 48)
 
     def test_render_alt_modifier(self) -> None:
         """Test that Alt modifier changes displayed labels."""

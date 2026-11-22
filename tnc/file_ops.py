@@ -578,6 +578,18 @@ def copy_files(
     )
 
 
+def _move_and_verify(source_path: Path, dest_path: Path) -> None:
+    """Move source_path to dest_path and verify original no longer exists."""
+    # shutil.move handles cross-filesystem moves by copy+delete. On
+    # weird mounts the unlink can silently leave the source in place
+    # — verify post-condition and raise so the user is told.
+    shutil.move(str(source_path), str(dest_path))
+    if source_path.exists() or source_path.is_symlink():
+        raise OSError(
+            f'Moved to destination but original could not be deleted: {source_path}'
+        )
+
+
 def move_files(
     filenames: list[str],
     source_dir: str | Path,
@@ -593,21 +605,11 @@ def move_files(
     Returns:
         MoveResult with success status and any error message.
     """
-    def move_item(source_path: Path, dest_path: Path) -> None:
-        # shutil.move handles cross-filesystem moves by copy+delete. On
-        # weird mounts the unlink can silently leave the source in place
-        # — verify post-condition and raise so the user is told.
-        shutil.move(str(source_path), str(dest_path))
-        if source_path.exists() or source_path.is_symlink():
-            raise OSError(
-                f'Moved to destination but original could not be deleted: {source_path}'
-            )
-
     return _process_file_operation(
         filenames,
         source_dir,
         dest_dir,
-        move_item,
+        _move_and_verify,
         MoveResult,
         'moved_files'
     )
@@ -1068,17 +1070,134 @@ def move_files_with_overwrite(
     Returns:
         MoveResult with success status.
     """
-    def move_item(source_path: Path, dest_path: Path) -> None:
-        shutil.move(str(source_path), str(dest_path))
-        if source_path.exists() or source_path.is_symlink():
-            raise OSError(
-                f'Moved to destination but original could not be deleted: {source_path}'
-            )
-
     return _process_files_with_overwrite(
         filenames, source_dir, dest_dir, handler,
-        move_item, MoveResult, 'moved_files', 'move'
+        _move_and_verify, MoveResult, 'moved_files', 'move'
     )
+
+
+def move_single_entry(
+    source_path: str | Path,
+    dest_path: str | Path,
+    confirm_overwrite: Callable[[Path], bool] | None = None,
+) -> MoveResult:
+    """Rename or move a single file, directory, or symlink to dest_path.
+
+    Handles in-place rename (including case-only renames on case-insensitive
+    filesystems), moving to another directory, and move+rename in one step.
+
+    Args:
+        source_path: Full path to the source entry.
+        dest_path: Full target path including target basename.
+        confirm_overwrite: Optional predicate called when dest_path exists;
+            must return True to overwrite or False to cancel.
+
+    Returns:
+        MoveResult describing the operation outcome.
+    """
+    source_path = Path(source_path)
+    dest_path = Path(dest_path)
+
+    source_parent = source_path.parent.resolve()
+    source_name = source_path.name
+    source_path = source_parent / source_name
+
+    dest_parent = dest_path.parent.resolve()
+    dest_name = dest_path.name
+    dest_path = dest_parent / dest_name
+
+    if dest_parent == source_parent and dest_name == source_name:
+        return MoveResult(success=False, error='', cancelled=True)
+
+    if not source_path.exists() and not source_path.is_symlink():
+        err = f'{source_name}: File not found'
+        return MoveResult(success=False, error=err, errors=[err])
+
+    if not dest_parent.exists():
+        err = f'Destination directory does not exist: {dest_parent}'
+        return MoveResult(success=False, error=err, errors=[err])
+
+    if not dest_parent.is_dir():
+        err = f'Destination parent is not a directory: {dest_parent}'
+        return MoveResult(success=False, error=err, errors=[err])
+
+    # Detect case-only rename on case-insensitive filesystems (APFS/NTFS)
+    # before broken-symlink cleanup, subdir checks, or overwrite prompting.
+    is_case_only_rename = False
+    if (
+        dest_parent == source_parent
+        and dest_name != source_name
+        and dest_name.casefold() == source_name.casefold()
+        and (dest_path.exists() or dest_path.is_symlink())
+    ):
+        try:
+            is_case_only_rename = os.path.samestat(
+                source_path.lstat(), dest_path.lstat()
+            )
+        except OSError:
+            is_case_only_rename = False
+
+    if is_case_only_rename:
+        try:
+            os.rename(source_path, dest_path)
+            return MoveResult(success=True, moved_files=[source_name])
+        except PermissionError:
+            err = f'{source_name}: Permission denied'
+            return MoveResult(success=False, error=err, errors=[err])
+        except OSError as exc:
+            err = f'{source_name}: {exc}'
+            return MoveResult(success=False, error=err, errors=[err])
+
+    # Guard against moving a directory into itself or any subdirectory
+    # (including case-insensitive ancestor matches on APFS).
+    is_into_self = _is_dest_inside_source(source_path, dest_path)
+    if not is_into_self and source_path.is_dir() and not source_path.is_symlink():
+        for ancestor in (dest_parent, *dest_parent.parents):
+            try:
+                if os.path.samefile(source_path, ancestor):
+                    is_into_self = True
+                    break
+            except OSError:
+                continue
+    if is_into_self:
+        err = f'{source_name}: Cannot move directory into itself or a subdirectory'
+        return MoveResult(success=False, error=err, errors=[err])
+
+    try:
+        # Distinct broken symlink at dest holds no real data; unlink cleanly.
+        if dest_path.is_symlink() and not dest_path.exists():
+            dest_path.unlink()
+
+        if dest_path.exists() or dest_path.is_symlink():
+            mismatch = _type_mismatch_error(source_path, dest_path, 'move')
+            if mismatch is not None:
+                err = f'{source_name}: {mismatch}'
+                return MoveResult(success=False, error=err, errors=[err])
+
+            if confirm_overwrite is None or not confirm_overwrite(dest_path):
+                return MoveResult(success=False, error='', cancelled=True)
+
+            sidecar = _move_aside(dest_path)
+            try:
+                _move_and_verify(source_path, dest_path)
+            except BaseException:
+                _rollback_sidecar(dest_path, sidecar)
+                raise
+            else:
+                _drop_sidecar(sidecar)
+            return MoveResult(success=True, moved_files=[source_name])
+
+        _move_and_verify(source_path, dest_path)
+        return MoveResult(success=True, moved_files=[source_name])
+    except PermissionError:
+        err = f'{source_name}: Permission denied'
+        return MoveResult(success=False, error=err, errors=[err])
+    except shutil.SameFileError:
+        err = f'{source_name}: Source and destination are the same file'
+        return MoveResult(success=False, error=err, errors=[err])
+    except OSError as exc:
+        err = f'{source_name}: {exc}'
+        return MoveResult(success=False, error=err, errors=[err])
 
 
 def rename_file(parent_dir: str | Path, old_name: str, new_name: str) -> RenameResult:

@@ -25,7 +25,7 @@ class FunctionBar:
     """Renders function key labels at bottom of screen.
 
     Labels change dynamically based on modifier key state:
-    - Default: F3 View, F4 Edit, F5 Copy, F6 Move, F7 Mkdir, F8 Delete, F10 Quit
+    - Default: F3 View, F4 Edit, F5 Copy, F6 RenMov, F7 Mkdir, F8 Delete, F10 Quit
     - Shift: F3 Sort, F4 Create, ...
     - Alt: F3 DirSz, ...
 
@@ -48,7 +48,7 @@ class FunctionBar:
         'F3': 'View',
         'F4': 'Edit',
         'F5': 'Copy',
-        'F6': 'Move',
+        'F6': 'RenMov',
         'F7': 'Mkdir',
         'F8': 'Delete',
         'F9': 'Menu',

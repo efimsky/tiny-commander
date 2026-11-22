@@ -184,7 +184,7 @@ class TestMoveIntegration(unittest.TestCase):
 
                 mock_stdscr = mock.MagicMock()
                 mock_stdscr.getmaxyx.return_value = (24, 80)
-                mock_stdscr.getch.return_value = ord('y')
+                mock_stdscr.getch.return_value = ord('\n')
 
                 app = App(mock_stdscr)
                 app.setup()
@@ -210,13 +210,14 @@ class TestMoveErrorDisplay(unittest.TestCase):
     def test_move_with_errors_passes_errors_to_summary(
         self, mock_summary, _mock_doupdate, _mock_curs_set, _mock_has_colors
     ):
-        """Move operation should pass error details to show_summary."""
+        """Multi-file move operation should pass error details to show_summary."""
         from tnc.app import App
         from tnc.file_ops import MoveResult
 
         with tempfile.TemporaryDirectory() as left_dir:
             with tempfile.TemporaryDirectory() as right_dir:
-                Path(left_dir, 'file.txt').write_text('content')
+                Path(left_dir, 'file1.txt').write_text('content1')
+                Path(left_dir, 'file2.txt').write_text('content2')
 
                 mock_stdscr = mock.MagicMock()
                 mock_stdscr.getmaxyx.return_value = (24, 80)
@@ -227,13 +228,13 @@ class TestMoveErrorDisplay(unittest.TestCase):
 
                 app.left_panel.change_directory(Path(left_dir))
                 app.right_panel.change_directory(Path(right_dir))
-                app.left_panel.cursor = 1  # Select the file
+                app.left_panel.selected = {'file1.txt', 'file2.txt'}
 
                 # Mock move_files_with_overwrite to return an error
                 with mock.patch('tnc.app.move_files_with_overwrite') as mock_move:
                     mock_move.return_value = MoveResult(
                         success=False,
-                        error='file.txt: Permission denied',
+                        error='file1.txt: Permission denied',
                         moved_files=[],
                         skipped_files=[]
                     )
@@ -241,6 +242,49 @@ class TestMoveErrorDisplay(unittest.TestCase):
                     app.do_move()
 
                 # Verify show_summary was called with errors
+                mock_summary.assert_called_once()
+                call_kwargs = mock_summary.call_args[1]
+                self.assertIn('errors', call_kwargs)
+                self.assertIsInstance(call_kwargs['errors'], list)
+                self.assertIn('file1.txt: Permission denied', call_kwargs['errors'])
+
+    @mock.patch('curses.has_colors', return_value=False)
+    @mock.patch('curses.curs_set')
+    @mock.patch('curses.doupdate')
+    @mock.patch('tnc.app.show_summary')
+    def test_single_move_with_errors_passes_errors_to_summary(
+        self, mock_summary, _mock_doupdate, _mock_curs_set, _mock_has_colors
+    ):
+        """Single-file move error from move_single_entry should pass errors to show_summary."""
+        from tnc.app import App
+        from tnc.file_ops import MoveResult
+
+        with tempfile.TemporaryDirectory() as left_dir:
+            with tempfile.TemporaryDirectory() as right_dir:
+                Path(left_dir, 'file.txt').write_text('content')
+
+                mock_stdscr = mock.MagicMock()
+                mock_stdscr.getmaxyx.return_value = (24, 80)
+                mock_stdscr.getch.return_value = ord('\n')
+
+                app = App(mock_stdscr)
+                app.setup()
+
+                app.left_panel.change_directory(Path(left_dir))
+                app.right_panel.change_directory(Path(right_dir))
+                app.left_panel.cursor = 1  # Select the file
+
+                with mock.patch('tnc.app.move_single_entry') as mock_move:
+                    mock_move.return_value = MoveResult(
+                        success=False,
+                        error='file.txt: Permission denied',
+                        errors=['file.txt: Permission denied'],
+                        moved_files=[],
+                        skipped_files=[]
+                    )
+
+                    app.do_move()
+
                 mock_summary.assert_called_once()
                 call_kwargs = mock_summary.call_args[1]
                 self.assertIn('errors', call_kwargs)

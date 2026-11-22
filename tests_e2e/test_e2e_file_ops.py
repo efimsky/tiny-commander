@@ -484,7 +484,7 @@ class TestCopyMoveE2E(_FileOpsE2ECase):
             self._move_cursor_to(term, 'single.txt', panel='left')
             term.press('f6')
             term.wait_for_text('Move "single.txt" to')
-            term.press('y')
+            term.press('enter')
             self._dismiss_summary(term, 'Moved 1 file(s) [Press any key]')
 
             self.assertFalse((src / 'single.txt').exists())
@@ -508,6 +508,109 @@ class TestCopyMoveE2E(_FileOpsE2ECase):
             self.assertEqual((dst / 'm2.txt').read_text(encoding='utf-8'), 'second')
             self.assertEqual((dst / 'mdir' / 'nested.txt').read_text(encoding='utf-8'), 'nested-body')
             self.assertTrue((src / 'keep.txt').exists())
+
+            self._quit_cleanly(term)
+
+    def test_f6_renmov_rename_move_rename_overwrite_and_cancel(self) -> None:
+        work, home = self._make_workspace()
+        src = work / 'src'
+        dst = work / 'dst'
+        src.mkdir()
+        dst.mkdir()
+
+        (work / 'aaa.txt').write_text('aaa', encoding='utf-8')
+        (work / 'keep.txt').write_text('keep-body', encoding='utf-8')
+        (work / 'zzz.txt').write_text('zzz', encoding='utf-8')
+        (src / 'draft.txt').write_text('draft-body', encoding='utf-8')
+        (src / 'collide.txt').write_text('new_src', encoding='utf-8')
+        (dst / 'collide.txt').write_text('old_dst', encoding='utf-8')
+
+        with self._open_driver(work, home, cols=100) as term:
+            term.wait_ready()
+
+            # Function bar displays F6RenMov unclipped at width=100
+            self.assertIn('F6RenMov', term.screen.row_text(term.screen.rows - 1))
+
+            # F6 on '..' is a silent no-op
+            self._move_cursor_to(term, '..', panel='left')
+            term.press('f6')
+            term.wait_stable(quiet_period=0.04, timeout=0.3)
+            self.assertFalse(term.screen.contains('Rename / Move'))
+
+            # Esc cancels with no filesystem change
+            self._move_cursor_to(term, 'keep.txt', panel='left')
+            term.press('f6')
+            term.wait_for_text('Move "keep.txt" to:')
+            term.press_esc_settled()
+            term.wait_until(lambda s: not s.contains('Rename / Move'))
+            self.assertTrue((work / 'keep.txt').exists())
+
+            # Unchanged destination (both panels in work) + Enter is a silent no-op
+            term.press('f6')
+            term.wait_for_text('Move "keep.txt" to:')
+            term.press('enter')
+            term.wait_until(lambda s: not s.contains('Rename / Move'))
+            term.wait_stable(quiet_period=0.04, timeout=0.3)
+            self.assertFalse(term.screen.contains('Moved'))
+            self.assertFalse(term.screen.contains('Error'))
+            self.assertEqual((work / 'keep.txt').read_text(encoding='utf-8'), 'keep-body')
+
+            # Edit only basename in-place -> renames in source dir and refreshes both panels
+            term.press('f6')
+            term.wait_for_text('Move "keep.txt" to:')
+            for _ in range(len('keep.txt')):
+                term.press('backspace')
+            term.type_text('mid.txt')
+            term.press('enter')
+            self._dismiss_summary(term, 'Moved 1 file(s) [Press any key]')
+
+            self.assertFalse((work / 'keep.txt').exists())
+            self.assertEqual((work / 'mid.txt').read_text(encoding='utf-8'), 'keep-body')
+            self.assertTrue(self._panel_contains(term, 'left', 'mid.txt'))
+            self.assertTrue(self._panel_contains(term, 'right', 'mid.txt'))
+            cur = self._active_cursor_entry(term, panel='left')
+            self.assertIsNotNone(cur)
+            assert cur is not None
+            self.assertTrue(cur[1].startswith('mid.txt'))
+
+            # Setup left -> src, right -> dst
+            self._setup_two_panels(term, 'src', 'dst')
+
+            # Move + rename in one step
+            self._move_cursor_to(term, 'draft.txt', panel='left')
+            term.press('f6')
+            term.wait_for_text('Move "draft.txt" to:')
+            for _ in range(len('draft.txt')):
+                term.press('backspace')
+            term.type_text('final.txt')
+            term.press('enter')
+            self._dismiss_summary(term, 'Moved 1 file(s) [Press any key]')
+
+            self.assertFalse((src / 'draft.txt').exists())
+            self.assertEqual((dst / 'final.txt').read_text(encoding='utf-8'), 'draft-body')
+            self.assertFalse(self._panel_contains(term, 'left', 'draft.txt'))
+            self.assertTrue(self._panel_contains(term, 'right', 'final.txt'))
+
+            # Overwrite prompt: decline ('n') keeps both intact, then confirm ('y') overwrites
+            self._move_cursor_to(term, 'collide.txt', panel='left')
+            term.press('f6')
+            term.wait_for_text('Move "collide.txt" to:')
+            term.press('enter')
+            term.wait_for_text('Overwrite')
+            term.wait_for_text('"collide.txt" already exists. Overwrite?')
+            term.press('n')
+            term.wait_until(lambda s: not s.contains('Overwrite'))
+            self.assertEqual((src / 'collide.txt').read_text(encoding='utf-8'), 'new_src')
+            self.assertEqual((dst / 'collide.txt').read_text(encoding='utf-8'), 'old_dst')
+
+            term.press('f6')
+            term.wait_for_text('Move "collide.txt" to:')
+            term.press('enter')
+            term.wait_for_text('Overwrite')
+            term.press('y')
+            self._dismiss_summary(term, 'Moved 1 file(s) [Press any key]')
+            self.assertFalse((src / 'collide.txt').exists())
+            self.assertEqual((dst / 'collide.txt').read_text(encoding='utf-8'), 'new_src')
 
             self._quit_cleanly(term)
 
@@ -662,7 +765,7 @@ class TestOverwriteAndSymlinkGuardsE2E(_FileOpsE2ECase):
             self._move_cursor_to(term, 'move_link.txt', panel='left')
             term.press('f6')
             term.wait_for_text('Move "move_link.txt" to')
-            term.press('y')
+            term.press('enter')
             self._dismiss_summary(term, 'Moved 1 file(s) [Press any key]')
 
             dst_move_link = dst / 'move_link.txt'
@@ -1054,7 +1157,7 @@ class TestEdgeCasesAndErrorsE2E(_FileOpsE2ECase):
             self._move_cursor_to(term, dbl_quote, panel='left')
             term.press('f6')
             term.wait_for_text(f'Move "{dbl_quote}" to')
-            term.press('y')
+            term.press('enter')
             self._dismiss_summary(term, 'Moved 1 file(s) [Press any key]')
             self.assertFalse((src / dbl_quote).exists())
             self.assertEqual((dst / dbl_quote).read_text(encoding='utf-8'), 'dq')
