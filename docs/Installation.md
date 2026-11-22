@@ -16,8 +16,8 @@ cd tiny-commander
 python -m tnc
 
 # Or make the entry script executable
-chmod +x tnc
-./tnc
+chmod +x bin/tnc
+./bin/tnc
 ```
 
 ## Add to PATH
@@ -26,10 +26,10 @@ To run `tnc` from anywhere:
 
 ```bash
 # Option 1: Symlink to a directory in your PATH
-ln -s /path/to/tiny-commander/tnc ~/.local/bin/tnc
+ln -s /path/to/tiny-commander/bin/tnc ~/.local/bin/tnc
 
 # Option 2: Add the directory to your PATH in ~/.bashrc or ~/.zshrc
-export PATH="$PATH:/path/to/tiny-commander"
+export PATH="$PATH:/path/to/tiny-commander/bin"
 ```
 
 ## Verify Installation

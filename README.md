@@ -36,8 +36,8 @@ cd tiny-commander
 python -m tnc
 
 # Or make executable and add to PATH
-chmod +x tnc
-./tnc
+chmod +x bin/tnc
+./bin/tnc
 ```
 
 ## Requirements

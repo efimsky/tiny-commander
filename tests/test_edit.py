@@ -7,11 +7,25 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from tests.helpers import create_mock_stdscr, find_entry_index
+from tests.helpers import (
+    create_mock_stdscr,
+    find_entry_index,
+    isolated_config,
+    isolated_env,
+)
 from tnc.app import Action, App
 
 
-class TestEditFileCalls(unittest.TestCase):
+class _IsolatedEditTestCase(unittest.TestCase):
+    """Base test case isolating EDITOR env and Config.default_path."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.enterContext(isolated_config())
+        self.enterContext(isolated_env('EDITOR'))
+
+
+class TestEditFileCalls(_IsolatedEditTestCase):
     """Test F4 edit file calls editor."""
 
     @mock.patch('curses.has_colors', return_value=False)
@@ -106,8 +120,25 @@ class TestEditFileCalls(unittest.TestCase):
                 self.assertEqual(args[1], '-e')
                 self.assertIn('test.txt', args[2])
 
+    @mock.patch('curses.has_colors', return_value=False)
+    @mock.patch('curses.curs_set')
+    def test_edit_setup_ignores_user_home_config(self, _curs_set, _has_colors):
+        """App.setup() in edit tests must not load user ~/.config/tnc/config."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fake_home = Path(tmpdir)
+            user_cfg = fake_home / '.config' / 'tnc' / 'config'
+            user_cfg.parent.mkdir(parents=True)
+            user_cfg.write_text('editor = user_home_editor\n')
 
-class TestEditFileValidation(unittest.TestCase):
+            with mock.patch('tnc.config.Path.home', return_value=fake_home), \
+                 mock.patch('os.getcwd', return_value=tmpdir):
+                app = App(create_mock_stdscr())
+                app.setup()
+
+                self.assertIsNone(app.config.editor)
+
+
+class TestEditFileValidation(_IsolatedEditTestCase):
     """Test validation before editing."""
 
     @mock.patch('curses.has_colors', return_value=False)
@@ -169,7 +200,7 @@ class TestEditFileValidation(unittest.TestCase):
                 self.assertIn('cancelled', result.error.lower())
 
 
-class TestEditFileResult(unittest.TestCase):
+class TestEditFileResult(_IsolatedEditTestCase):
     """Test edit file result handling."""
 
     @mock.patch('curses.has_colors', return_value=False)
@@ -194,7 +225,7 @@ class TestEditFileResult(unittest.TestCase):
                 self.assertTrue(result.success)
 
 
-class TestEditRefreshesPanel(unittest.TestCase):
+class TestEditRefreshesPanel(_IsolatedEditTestCase):
     """Test that panel is refreshed after edit."""
 
     @mock.patch('curses.has_colors', return_value=False)
@@ -218,7 +249,7 @@ class TestEditRefreshesPanel(unittest.TestCase):
                     mock_refresh.assert_called_once()
 
 
-class TestF4KeyBinding(unittest.TestCase):
+class TestF4KeyBinding(_IsolatedEditTestCase):
     """Test F4 key triggers edit."""
 
     @mock.patch('curses.has_colors', return_value=False)
@@ -233,7 +264,7 @@ class TestF4KeyBinding(unittest.TestCase):
         self.assertEqual(action, Action.EDIT)
 
 
-class TestEditEditorNotFound(unittest.TestCase):
+class TestEditEditorNotFound(_IsolatedEditTestCase):
     """Test handling of missing editor."""
 
     @mock.patch('curses.has_colors', return_value=False)

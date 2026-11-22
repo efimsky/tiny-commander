@@ -7,11 +7,25 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from tests.helpers import create_mock_stdscr, find_entry_index
+from tests.helpers import (
+    create_mock_stdscr,
+    find_entry_index,
+    isolated_config,
+    isolated_env,
+)
 from tnc.app import Action, App
 
 
-class TestViewFilePager(unittest.TestCase):
+class _IsolatedViewTestCase(unittest.TestCase):
+    """Base test case isolating PAGER env and Config.default_path."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.enterContext(isolated_config())
+        self.enterContext(isolated_env('PAGER'))
+
+
+class TestViewFilePager(_IsolatedViewTestCase):
     """Test F3 view file calls pager."""
 
     @mock.patch('curses.has_colors', return_value=False)
@@ -82,8 +96,25 @@ class TestViewFilePager(unittest.TestCase):
                 self.assertEqual(args[1], '-R')
                 self.assertIn('test.txt', args[2])
 
+    @mock.patch('curses.has_colors', return_value=False)
+    @mock.patch('curses.curs_set')
+    def test_view_setup_ignores_user_home_config(self, _curs_set, _has_colors):
+        """App.setup() in view tests must not load user ~/.config/tnc/config."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fake_home = Path(tmpdir)
+            user_cfg = fake_home / '.config' / 'tnc' / 'config'
+            user_cfg.parent.mkdir(parents=True)
+            user_cfg.write_text('pager = user_home_pager\n')
 
-class TestViewFileValidation(unittest.TestCase):
+            with mock.patch('tnc.config.Path.home', return_value=fake_home), \
+                 mock.patch('os.getcwd', return_value=tmpdir):
+                app = App(create_mock_stdscr())
+                app.setup()
+
+                self.assertIsNone(app.config.pager)
+
+
+class TestViewFileValidation(_IsolatedViewTestCase):
     """Test validation before viewing."""
 
     @mock.patch('curses.has_colors', return_value=False)
@@ -145,7 +176,7 @@ class TestViewFileValidation(unittest.TestCase):
                 self.assertIn('cancelled', result.error.lower())
 
 
-class TestViewFileResult(unittest.TestCase):
+class TestViewFileResult(_IsolatedViewTestCase):
     """Test view file result handling."""
 
     @mock.patch('curses.has_colors', return_value=False)
@@ -170,7 +201,7 @@ class TestViewFileResult(unittest.TestCase):
                 self.assertTrue(result.success)
 
 
-class TestF3KeyBinding(unittest.TestCase):
+class TestF3KeyBinding(_IsolatedViewTestCase):
     """Test F3 key triggers view."""
 
     @mock.patch('curses.has_colors', return_value=False)
@@ -185,7 +216,7 @@ class TestF3KeyBinding(unittest.TestCase):
         self.assertEqual(action, Action.VIEW)
 
 
-class TestViewPagerNotFound(unittest.TestCase):
+class TestViewPagerNotFound(_IsolatedViewTestCase):
     """Test handling of missing pager."""
 
     @mock.patch('curses.has_colors', return_value=False)
@@ -210,7 +241,7 @@ class TestViewPagerNotFound(unittest.TestCase):
                 self.assertIn('not found', result.error.lower())
 
 
-class TestViewNonZeroExit(unittest.TestCase):
+class TestViewNonZeroExit(_IsolatedViewTestCase):
     """Pager that exits non-zero must be reported as failure (issue #24)."""
 
     @mock.patch('curses.has_colors', return_value=False)

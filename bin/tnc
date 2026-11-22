@@ -8,9 +8,34 @@
 # Falls back to plain `python3` when no versioned binary is found, letting
 # tnc/_version_check.py print a clean "requires 3.13+" error if it's too old.
 
-case "$0" in
-    */*) SCRIPT_DIR=$(cd "${0%/*}" && pwd) ;;
-    *)   SCRIPT_DIR=$(pwd) ;;
+TARGET="$0"
+_tnc_hops=0
+while [ -L "$TARGET" ] && [ "$_tnc_hops" -lt 40 ]; do
+    _tnc_hops=$((_tnc_hops + 1))
+    case "$TARGET" in
+        */*)
+            _tnc_raw_dir=${TARGET%/*}
+            DIR=$(cd "${_tnc_raw_dir:-/}" 2>/dev/null && pwd -P || pwd -P)
+            ;;
+        *)
+            DIR=$(pwd -P)
+            ;;
+    esac
+    LINK=$(readlink "$TARGET" 2>/dev/null || /usr/bin/readlink "$TARGET" 2>/dev/null || /bin/readlink "$TARGET" 2>/dev/null) || break
+    case "$LINK" in
+        /*) TARGET="$LINK" ;;
+        *)  TARGET="$DIR/$LINK" ;;
+    esac
+done
+
+case "$TARGET" in
+    */*)
+        _tnc_raw_dir=${TARGET%/*}
+        SCRIPT_DIR=$(cd "${_tnc_raw_dir:-/}" && pwd -P)
+        ;;
+    *)
+        SCRIPT_DIR=$(pwd -P)
+        ;;
 esac
 PROJECT_ROOT=${SCRIPT_DIR%/*}
 export PYTHONPATH="$PROJECT_ROOT${PYTHONPATH:+:$PYTHONPATH}"
