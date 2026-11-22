@@ -132,7 +132,7 @@ class TestTerminalHarnessSmoke(unittest.TestCase):
                 rows=24,
                 cols=80,
                 cwd=cwd,
-                env={'EDITOR': str(editor.path), 'PAGER': str(pager.path)},
+                env={'VISUAL': None, 'EDITOR': str(editor.path), 'PAGER': str(pager.path)},
             ) as term:
                 term.wait_ready()
                 # Move off '..' onto 'notes.txt'
@@ -176,7 +176,7 @@ class TestTerminalHarnessSmoke(unittest.TestCase):
                     rows=24,
                     cols=80,
                     cwd=cwd,
-                    env={'EDITOR': str(editor.path), 'PAGER': str(pager.path)},
+                    env={'VISUAL': None, 'EDITOR': str(editor.path), 'PAGER': str(pager.path)},
                 )
 
             cfg = FuzzConfig(

@@ -1055,12 +1055,18 @@ class App:
             return
         self.stdscr.refresh()
 
-    def _prompt_tool_setup(self, tool_type: str, options: list[str]) -> str | None:
+    def _prompt_tool_setup(
+        self,
+        tool_type: str,
+        options: list[str],
+        default_option: str | None = None,
+    ) -> str | None:
         """Prompt user to select a tool from available options.
 
         Args:
             tool_type: Type of tool ('pager' or 'editor').
             options: List of available tool commands.
+            default_option: Optional option string to pre-focus.
 
         Returns:
             Selected tool command, or None if cancelled.
@@ -1077,10 +1083,14 @@ class App:
 
         # Show selection dialog with custom option
         title = f'Select {tool_type.title()}'
+        initial_focused = (
+            options.index(default_option) if default_option in options else 0
+        )
         dialog = SelectionDialog(
             title=title,
             options=options,
-            allow_custom=True
+            allow_custom=True,
+            initial_focused=initial_focused,
         )
 
         return dialog.show(self.stdscr)
@@ -1104,7 +1114,10 @@ class App:
     def _prompt_editor_setup(self) -> None:
         """Prompt user to select an editor."""
         options = Config.get_available_editors()
-        selected = self._prompt_tool_setup('editor', options)
+        if not options:
+            options = ['vi']
+        default_editor = self.config.get_editor()
+        selected = self._prompt_tool_setup('editor', options, default_option=default_editor)
         if selected:
             self.config.editor = selected
             self._save_config_or_warn()

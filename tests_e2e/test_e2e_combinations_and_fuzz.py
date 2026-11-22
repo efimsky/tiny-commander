@@ -61,7 +61,7 @@ class TestScriptedFeatureCollisionsE2E(unittest.TestCase):
                 rows=24,
                 cols=80,
                 cwd=cwd,
-                env={'EDITOR': None, 'PAGER': None},
+                env={'VISUAL': None, 'EDITOR': None, 'PAGER': None},
             ) as term:
                 term.wait_ready()
 
@@ -157,7 +157,7 @@ class TestScriptedFeatureCollisionsE2E(unittest.TestCase):
                 rows=24,
                 cols=80,
                 cwd=cwd,
-                env={'EDITOR': None, 'PAGER': None},
+                env={'VISUAL': None, 'EDITOR': None, 'PAGER': None},
             ) as term:
                 term.wait_ready()
                 term.press('down')
@@ -236,7 +236,7 @@ class TestScriptedFeatureCollisionsE2E(unittest.TestCase):
                 rows=24,
                 cols=80,
                 cwd=cwd,
-                env={'EDITOR': None, 'PAGER': None},
+                env={'VISUAL': None, 'EDITOR': None, 'PAGER': None},
             ) as term:
                 term.wait_ready()
 
@@ -323,7 +323,7 @@ class TestScriptedFeatureCollisionsE2E(unittest.TestCase):
                 rows=24,
                 cols=80,
                 cwd=cwd,
-                env={'EDITOR': None, 'PAGER': None},
+                env={'VISUAL': None, 'EDITOR': None, 'PAGER': None},
             ) as term:
                 term.wait_ready()
 
@@ -404,7 +404,7 @@ class TestScriptedFeatureCollisionsE2E(unittest.TestCase):
                 rows=24,
                 cols=80,
                 cwd=cwd,
-                env={'EDITOR': None, 'PAGER': None},
+                env={'VISUAL': None, 'EDITOR': None, 'PAGER': None},
             ) as term:
                 term.wait_ready()
 

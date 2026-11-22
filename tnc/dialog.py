@@ -794,7 +794,8 @@ class SelectionDialog(Modal):
         self,
         title: str,
         options: list[str],
-        allow_custom: bool = False
+        allow_custom: bool = False,
+        initial_focused: int = 0,
     ) -> None:
         """Initialize a selection dialog.
 
@@ -802,6 +803,7 @@ class SelectionDialog(Modal):
             title: Dialog title.
             options: List of options to display.
             allow_custom: If True, add Custom option for text input.
+            initial_focused: Initial focused item index (clamped to valid range).
         """
         super().__init__()
         self.title = title
@@ -809,9 +811,19 @@ class SelectionDialog(Modal):
         self.allow_custom = allow_custom
         self.in_custom_input_mode = False
         self.custom_text = ''
-        self.focused = 0
+        self._scroll_offset = 0
+        total = self._total_focusable()
+        self.focused = max(0, min(initial_focused, total - 1)) if total > 0 else 0
         # Each entry: (x_start, x_end, y, option_index_or_'custom')
         self.option_positions: list[tuple[int, int, int, Any]] = []
+
+    def _selection_hint(self) -> str:
+        """Build keyboard/mouse hint string, capping digit shortcuts at 1-9."""
+        num_items = self._total_focusable()
+        max_digit = min(num_items, 9)
+        if max_digit <= 1:
+            return 'arrows + Enter, or click  [Esc] to cancel'
+        return f'1-{max_digit}, arrows + Enter, or click  [Esc] to cancel'
 
     def get_dimensions(self) -> tuple[int, int]:
         """Calculate dialog dimensions based on content.
@@ -819,15 +831,15 @@ class SelectionDialog(Modal):
         Returns:
             Tuple of (width, height).
         """
-        num_items = len(self.options) + (1 if self.allow_custom else 0)
+        num_items = self._total_focusable()
         max_option_len = max((len(opt) for opt in self.options), default=0)
         if self.allow_custom:
             max_option_len = max(max_option_len, len('Custom...'))
 
-        sel_hint = f'1-{num_items}, arrows + Enter, or click  [Esc] to cancel'
+        sel_hint = self._selection_hint()
         custom_prompt = 'Enter custom command:'
         custom_hint = '[Enter] to confirm, [Esc] to cancel'
-        num_prefix_len = max(4, len(str(num_items)) + 3)
+        num_prefix_len = max(4, len(str(num_items)) + 4)
 
         if self.in_custom_input_mode:
             content_width = max(
@@ -985,6 +997,11 @@ class SelectionDialog(Modal):
         width, height = self.get_dimensions()
         width = _clamp_modal_width(width, cols)
 
+        if not self.in_custom_input_mode:
+            num_items = self._total_focusable()
+            max_visible = max(1, rows - 6)
+            height = min(num_items, max_visible) + 6
+
         # Calculate centered position clamped to screen bounds
         start_y = max(0, (rows - height) // 2)
         start_x = max(0, (cols - width) // 2)
@@ -995,7 +1012,7 @@ class SelectionDialog(Modal):
         if self.in_custom_input_mode:
             self._render_custom_input(stdscr, start_y, start_x, width, height, dialog_attr, title_attr)
         else:
-            self._render_selection(stdscr, start_y, start_x, width, height, dialog_attr, title_attr)
+            self._render_selection(stdscr, start_y, start_x, width, height, dialog_attr, title_attr, rows)
 
     def _render_selection(
         self,
@@ -1005,7 +1022,8 @@ class SelectionDialog(Modal):
         width: int,
         height: int,
         dialog_attr: int,
-        title_attr: int
+        title_attr: int,
+        rows: int | None = None,
     ) -> None:
         """Render the selection list mode."""
         frame = _render_dialog_frame(width, self.title)
@@ -1024,28 +1042,34 @@ class SelectionDialog(Modal):
         # Separator
         safe_addstr(stdscr, start_y + 2, start_x, frame['separator'], dialog_attr)
 
+        items: list[tuple[str, Any]] = [
+            (opt, idx) for idx, opt in enumerate(self.options)
+        ]
+        if self.allow_custom:
+            items.append(('Custom...', 'custom'))
+
+        max_visible = max(1, (rows - 6) if rows is not None else len(items))
+        if len(items) <= max_visible:
+            self._scroll_offset = 0
+            visible = items
+        else:
+            if self.focused < self._scroll_offset:
+                self._scroll_offset = self.focused
+            elif self.focused >= self._scroll_offset + max_visible:
+                self._scroll_offset = self.focused - max_visible + 1
+            self._scroll_offset = max(0, min(self._scroll_offset, len(items) - max_visible))
+            visible = items[self._scroll_offset : self._scroll_offset + max_visible]
+
         # Options. Highlight the focused row with A_REVERSE so keyboard
         # arrow navigation has a visible cursor (issue #16).
         line_y = start_y + 3
-        for i, opt in enumerate(self.options, 1):
-            content = '│' + f'  {i}. {opt}'[:text_limit].ljust(inner_text) + '│'
-            attr = dialog_attr | (curses.A_REVERSE if self.focused == i - 1 else 0)
+        for row_offset, (label, target) in enumerate(visible):
+            item_idx = self._scroll_offset + row_offset
+            content = '│' + f'  {item_idx + 1}. {label}'[:text_limit].ljust(inner_text) + '│'
+            attr = dialog_attr | (curses.A_REVERSE if self.focused == item_idx else 0)
             safe_addstr(stdscr, line_y, start_x, content, attr)
             self.option_positions.append(
-                (start_x + 1, start_x + width - 1, line_y, i - 1)
-            )
-            line_y += 1
-
-        # Custom option
-        if self.allow_custom:
-            num = len(self.options) + 1
-            content = '│' + f'  {num}. Custom...'[:text_limit].ljust(inner_text) + '│'
-            attr = dialog_attr | (
-                curses.A_REVERSE if self.focused == len(self.options) else 0
-            )
-            safe_addstr(stdscr, line_y, start_x, content, attr)
-            self.option_positions.append(
-                (start_x + 1, start_x + width - 1, line_y, 'custom')
+                (start_x + 1, start_x + width - 1, line_y, target)
             )
             line_y += 1
 
@@ -1054,8 +1078,7 @@ class SelectionDialog(Modal):
         line_y += 1
 
         # Hint line
-        max_num = len(self.options) + (1 if self.allow_custom else 0)
-        hint = f'1-{max_num}, arrows + Enter, or click  [Esc] to cancel'
+        hint = self._selection_hint()
         safe_addstr(stdscr, line_y, start_x, frame['content_line'](hint), dialog_attr)
         line_y += 1
 

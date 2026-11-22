@@ -3,7 +3,47 @@
 import os
 import shutil
 import sys
+from dataclasses import dataclass
 from pathlib import Path
+
+
+@dataclass(frozen=True)
+class EditorSpec:
+    """Specification for a known terminal editor."""
+
+    binaries: tuple[str, ...]
+    args: tuple[str, ...] = ()
+
+    def command_for(self, binary: str) -> str:
+        """Return display/command string for the matched binary."""
+        if self.args:
+            return f'{binary} {" ".join(self.args)}'
+        return binary
+
+
+KNOWN_TERMINAL_EDITORS: tuple[EditorSpec, ...] = (
+    EditorSpec(('micro',)),
+    EditorSpec(('ne',)),
+    EditorSpec(('hx', 'helix')),
+    EditorSpec(('kak',)),
+    EditorSpec(('nvim',)),
+    EditorSpec(('nano',)),
+    EditorSpec(('vim',)),
+    EditorSpec(('emacs',), ('-nw',)),
+    EditorSpec(('vi',)),
+)
+
+_MACOS_GUI_EDITORS: tuple[str, ...] = ('subl', 'mate', 'code')
+
+_FIXED_EDITOR_ALIASES: dict[str, str] = {
+    'neovim': 'nvim',
+    'kakoune': 'kak',
+}
+
+_ALT_BINARY_ALIASES: dict[str, tuple[str, ...]] = {
+    'helix': ('helix', 'hx'),
+    'hx': ('hx', 'helix'),
+}
 
 
 _TRUTHY = ('yes', 'true', '1', 'on')
@@ -136,13 +176,22 @@ class Config:
             return False
         return True
 
+    @staticmethod
+    def _get_env_editor() -> str | None:
+        """Return first non-blank editor command from $VISUAL or $EDITOR."""
+        for var in ('VISUAL', 'EDITOR'):
+            val = os.environ.get(var)
+            if val and val.strip():
+                return val.strip()
+        return None
+
     def needs_editor_setup(self) -> bool:
         """Check if editor setup is needed.
 
         Returns:
-            True if no editor is configured and EDITOR env is not set.
+            True if no editor is configured and neither $VISUAL nor $EDITOR is set.
         """
-        return not os.environ.get('EDITOR') and self.editor is None
+        return self._get_env_editor() is None and self.editor is None
 
     def needs_pager_setup(self) -> bool:
         """Check if pager setup is needed.
@@ -153,12 +202,12 @@ class Config:
         return not os.environ.get('PAGER') and self.pager is None
 
     def get_editor(self) -> str | None:
-        """Get the editor to use, preferring env over config.
+        """Get the editor to use, preferring $VISUAL then $EDITOR over config.
 
         Returns:
             Editor command, or None if not configured.
         """
-        return os.environ.get('EDITOR') or self.editor
+        return self._get_env_editor() or self.editor
 
     def get_pager(self) -> str | None:
         """Get the pager to use, preferring env over config.
@@ -169,18 +218,39 @@ class Config:
         return os.environ.get('PAGER') or self.pager
 
     @staticmethod
+    def get_detected_terminal_editors() -> list[str]:
+        """Detect known terminal editors on PATH in priority order."""
+        available: list[str] = []
+        for spec in KNOWN_TERMINAL_EDITORS:
+            for binary in spec.binaries:
+                if shutil.which(binary):
+                    available.append(spec.command_for(binary))
+                    break
+        return available
+
+    def resolve_editor(self) -> str:
+        """Resolve the editor following $VISUAL -> $EDITOR -> config -> detected -> vi."""
+        configured = self.get_editor()
+        if configured:
+            return configured
+        detected = self.get_detected_terminal_editors()
+        if detected:
+            return detected[0]
+        return 'vi'
+
+    @staticmethod
     def get_editor_options() -> list[str]:
         """Get list of common editor options for setup dialog.
 
-        Terminal editors are always included. GUI editors (TextEdit, Sublime,
-        TextMate, VS Code) are only included on macOS.
+        Terminal editors are always included in priority order. GUI editors
+        (TextEdit, Sublime, TextMate, VS Code) are only included on macOS.
 
         Returns:
             List of editor command names.
         """
-        editors = ['vi', 'nano', 'vim', 'emacs']
+        editors = [spec.command_for(spec.binaries[0]) for spec in KNOWN_TERMINAL_EDITORS]
         if sys.platform == 'darwin':
-            editors.extend(['TextEdit', 'subl', 'mate', 'code'])
+            editors.extend(['TextEdit', *_MACOS_GUI_EDITORS])
         return editors
 
     @staticmethod
@@ -196,25 +266,21 @@ class Config:
     def get_available_editors() -> list[str]:
         """Get list of editors that are available on the system.
 
-        Terminal editors (vi, vim, nano, emacs) are checked on all platforms.
+        Terminal editors are checked on all platforms in priority order.
         GUI editors (TextEdit, Sublime, TextMate, VS Code) are only checked
-        on macOS. TextEdit is always available on macOS (it's a system app).
+        on macOS after terminal editors.
 
         Returns:
-            List of editor names that are available on the system.
+            List of editor commands/names that are available on the system.
         """
-        # Terminal editors - available on all platforms
-        terminal_editors = ['vi', 'nano', 'vim', 'emacs']
-        available = [cmd for cmd in terminal_editors if shutil.which(cmd)]
+        available = Config.get_detected_terminal_editors()
 
         # GUI editors - macOS only
         if sys.platform == 'darwin':
             # TextEdit uses 'open -e', so check if 'open' exists
             if shutil.which('open'):
                 available.append('TextEdit')
-            # Check for other GUI editors
-            gui_editors = ['subl', 'mate', 'code']
-            available.extend(cmd for cmd in gui_editors if shutil.which(cmd))
+            available.extend(cmd for cmd in _MACOS_GUI_EDITORS if shutil.which(cmd))
 
         return available
 
@@ -222,17 +288,25 @@ class Config:
     def get_editor_command(editor_name: str) -> str:
         """Get the actual command to run for an editor.
 
-        Maps display names to commands where they differ (e.g., TextEdit -> open -e).
-        The TextEdit mapping only applies on macOS.
+        Maps display names and friendly aliases to executable commands
+        (e.g., TextEdit -> open -e, neovim -> nvim, kakoune -> kak,
+        helix/hx -> whichever binary exists on PATH).
 
         Args:
-            editor_name: The editor name (as shown in selection prompt).
+            editor_name: The editor name (as shown in selection prompt or config).
 
         Returns:
             The actual command to execute.
         """
         if editor_name == 'TextEdit' and sys.platform == 'darwin':
             return 'open -e'
+        if editor_name in _FIXED_EDITOR_ALIASES:
+            return _FIXED_EDITOR_ALIASES[editor_name]
+        if editor_name in _ALT_BINARY_ALIASES:
+            for candidate in _ALT_BINARY_ALIASES[editor_name]:
+                if shutil.which(candidate):
+                    return candidate
+            return editor_name
         return editor_name
 
     @staticmethod

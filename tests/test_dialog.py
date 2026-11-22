@@ -1106,5 +1106,94 @@ class TestConfirmDialogMouse(unittest.TestCase):
                 )
 
 
+class TestSelectionDialogIssue73(unittest.TestCase):
+    """Tests for SelectionDialog initial_focused, >9 options, and short-terminal scrolling (#73)."""
+
+    def test_initial_focused_sets_and_clamps_focus(self):
+        from tnc.dialog import SelectionDialog
+        d = SelectionDialog('Select Editor', ['micro', 'vim', 'vi'], allow_custom=True, initial_focused=1)
+        self.assertEqual(d.focused, 1)
+
+        d_neg = SelectionDialog('Select Editor', ['micro', 'vim'], initial_focused=-5)
+        self.assertEqual(d_neg.focused, 0)
+
+        d_high = SelectionDialog('Select Editor', ['micro', 'vim'], allow_custom=True, initial_focused=99)
+        self.assertEqual(d_high.focused, 2)  # index 2 = Custom...
+
+        d_empty = SelectionDialog('Select Editor', [], allow_custom=False, initial_focused=3)
+        self.assertEqual(d_empty.focused, 0)
+
+    @patch('tnc.dialog.get_attr', return_value=0)
+    def test_large_option_list_caps_digit_hint_and_allows_arrows_past_nine(self, _attr):
+        from tnc.dialog import SelectionDialog
+        options = [f'ed{i}' for i in range(1, 13)]  # 12 options + Custom... = 13 items
+        d = SelectionDialog('Select Editor', options, allow_custom=True)
+        win = MagicMock()
+        win.getmaxyx.return_value = (24, 80)
+
+        d.render(win)
+        rendered = '\n'.join(
+            c[0][2] for c in win.addstr.call_args_list
+            if len(c[0]) >= 3 and isinstance(c[0][2], str)
+        )
+        self.assertIn('1-9, arrows + Enter, or click  [Esc] to cancel', rendered)
+        self.assertNotIn('1-13', rendered)
+
+        # Digit 9 selects 9th option
+        self.assertEqual(d.handle_key(ord('9')), 'ed9')
+
+        # Arrow navigation past 9 selects 10th option
+        d2 = SelectionDialog('Select Editor', options, allow_custom=True)
+        win.getch.side_effect = [curses.KEY_DOWN] * 9 + [ord('\n')]
+        self.assertEqual(d2.show(win), 'ed10')
+
+        # Arrow navigation to Custom... enters custom mode
+        d3 = SelectionDialog('Select Editor', options, allow_custom=True)
+        for _ in range(12):
+            d3.handle_key(curses.KEY_DOWN)
+        self.assertIsNone(d3.handle_key(ord('\n')))
+        self.assertTrue(d3.in_custom_input_mode)
+
+    @patch('tnc.dialog.get_attr', return_value=0)
+    def test_short_terminal_scrolls_and_keeps_bounds_and_click_targets(self, _attr):
+        from tnc.dialog import SelectionDialog
+        options = [f'ed{i:02d}' for i in range(1, 15)]  # 14 options + Custom... = 15 items
+        d = SelectionDialog('Select Editor', options, allow_custom=True)
+        win = MagicMock()
+        win.getmaxyx.return_value = (12, 80)  # max_visible = 12 - 6 = 6 rows
+
+        d.render(win)
+        # All rendered rows fit within [0, 11] and bottom border + hint are visible
+        ys = [c[0][0] for c in win.addstr.call_args_list if len(c[0]) >= 3]
+        self.assertGreaterEqual(min(ys), 0)
+        self.assertLess(max(ys), 12)
+        texts = [c[0][2] for c in win.addstr.call_args_list if len(c[0]) >= 3]
+        joined = '\n'.join(texts)
+        self.assertIn('1-9, arrows + Enter', joined)
+        self.assertTrue(any(t.startswith('└') for t in texts))
+        self.assertIn('ed01', joined)
+        self.assertNotIn('ed07', joined)
+
+        # Navigate down past visible viewport (index 7 = ed08) -> scrolls into view
+        for _ in range(7):
+            d.handle_key(curses.KEY_DOWN)
+        win.reset_mock()
+        d.render(win)
+        texts_scrolled = [c[0][2] for c in win.addstr.call_args_list if len(c[0]) >= 3]
+        joined_scrolled = '\n'.join(texts_scrolled)
+        self.assertIn('ed08', joined_scrolled)
+        self.assertNotIn('ed01', joined_scrolled)
+
+        # Click on the last visible option position selects that scrolled option
+        x_start, x_end, row_y, target = d.option_positions[-1]
+        midx = (x_start + x_end) // 2
+        win.getch.side_effect = [curses.KEY_MOUSE]
+        with patch(
+            'curses.getmouse',
+            return_value=(0, midx, row_y, 0, curses.BUTTON1_CLICKED),
+        ):
+            self.assertEqual(d.show(win), options[target])
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -797,7 +797,7 @@ class TestStartupConfigCLIAndLifecycle(unittest.TestCase):
                 cols=80,
                 cwd=cwd,
                 home=home_cfg,
-                env={'EDITOR': str(env_ed.path), 'PAGER': str(env_pg.path)},
+                env={'VISUAL': None, 'EDITOR': str(env_ed.path), 'PAGER': str(env_pg.path)},
             ) as term:
                 term.wait_ready()
                 term.press('down')

@@ -31,7 +31,7 @@ class _AppTestCase(unittest.TestCase):
         self._patches = [
             mock.patch.dict(
                 os.environ,
-                {k: v for k, v in os.environ.items() if k not in ('EDITOR', 'PAGER')},
+                {k: v for k, v in os.environ.items() if k not in ('VISUAL', 'EDITOR', 'PAGER')},
                 clear=True,
             ),
             mock.patch.object(Config, 'default_path', return_value=self.cfg_path),
