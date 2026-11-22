@@ -91,6 +91,26 @@ class ExternalToolStub:
         return records
 
 
+def _rmtree_force(path: str | Path) -> None:
+    """Recursively delete a directory tree, restoring permissions if needed."""
+    def _onexc(func: Any, target: str, exc: BaseException) -> None:
+        if isinstance(exc, PermissionError):
+            parent = os.path.dirname(target)
+            if parent:
+                try:
+                    os.chmod(parent, 0o700)
+                except OSError:
+                    pass
+            try:
+                os.chmod(target, 0o700 if os.path.isdir(target) else 0o600)
+            except OSError:
+                pass
+            func(target)
+
+    if os.path.exists(path):
+        shutil.rmtree(path, onexc=_onexc)
+
+
 class TerminalDriver:
     """Context manager driving Tiny Commander inside a real PTY with a VirtualTerminal."""
 
@@ -103,12 +123,15 @@ class TerminalDriver:
         cwd: str | Path | None = None,
         home: str | Path | None = None,
         term: str = 'xterm-256color',
-        env: dict[str, str] | None = None,
+        env: dict[str, str | None] | None = None,
         escdelay_ms: int = 25,
         default_timeout: float = 3.0,
+        controlling_tty: bool = True,
     ) -> None:
         self.term = term
+        self.escdelay_ms = escdelay_ms
         self.default_timeout = default_timeout
+        self.controlling_tty = controlling_tty
         self.screen = VirtualTerminal(rows=rows, cols=cols)
         self.key_map = KeyMap(term)
         self._command = list(command) if command is not None else [sys.executable, '-m', 'tnc']
@@ -128,7 +151,7 @@ class TerminalDriver:
         else:
             self.home = Path(home)
 
-        base_env = {
+        base_env: dict[str, str] = {
             'PATH': os.environ.get('PATH', '/usr/bin:/bin'),
             'HOME': str(self.home),
             'TERM': self.term,
@@ -138,11 +161,17 @@ class TerminalDriver:
             'PYTHONPATH': str(_REPO_ROOT),
         }
         if env:
-            base_env.update(env)
+            for k, v in env.items():
+                if v is None:
+                    base_env.pop(k, None)
+                else:
+                    base_env[k] = v
         self._env = base_env
 
         self._master_fd: int | None = None
         self._proc: subprocess.Popen[bytes] | None = None
+        self._eof = False
+        self._last_click: tuple[float, int, int, int] | None = None
         self.raw_output = bytearray()
 
     def __enter__(self) -> 'TerminalDriver':
@@ -157,18 +186,30 @@ class TerminalDriver:
         if self._proc is not None:
             return
         master_fd, slave_fd = pty.openpty()
+        self._eof = False
+
+        def _attach_ctty() -> None:
+            os.setsid()
+            try:
+                fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+            except OSError:
+                pass
+
         try:
             self._set_winsize(slave_fd, self.screen.rows, self.screen.cols)
-            self._proc = subprocess.Popen(
-                self._command,
-                cwd=str(self.cwd),
-                stdin=slave_fd,
-                stdout=slave_fd,
-                stderr=slave_fd,
-                env=self._env,
-                start_new_session=True,
-                close_fds=True,
-            )
+            popen_kwargs: dict[str, Any] = {
+                'cwd': str(self.cwd),
+                'stdin': slave_fd,
+                'stdout': slave_fd,
+                'stderr': slave_fd,
+                'env': self._env,
+                'close_fds': True,
+            }
+            if self.controlling_tty:
+                popen_kwargs['preexec_fn'] = _attach_ctty
+            else:
+                popen_kwargs['start_new_session'] = True
+            self._proc = subprocess.Popen(self._command, **popen_kwargs)
             self._master_fd = master_fd
         except BaseException:
             os.close(master_fd)
@@ -192,7 +233,7 @@ class TerminalDriver:
 
     def pump(self, timeout: float = 0.0) -> bytes:
         """Read any available PTY bytes and feed them into ``self.screen``."""
-        if self._master_fd is None:
+        if self._master_fd is None or self._eof:
             return b''
         collected = bytearray()
         deadline = time.monotonic() + max(0.0, timeout)
@@ -203,14 +244,17 @@ class TerminalDriver:
             try:
                 readable, _, _ = select.select([self._master_fd], [], [], wait)
             except (OSError, ValueError):
+                self._eof = True
                 break
             if not readable:
                 break
             try:
                 chunk = os.read(self._master_fd, 65536)
             except OSError:
+                self._eof = True
                 break
             if not chunk:
+                self._eof = True
                 break
             collected.extend(chunk)
             self.raw_output.extend(chunk)
@@ -246,7 +290,7 @@ class TerminalDriver:
         )
 
     def _has_pending_read(self) -> bool:
-        if self._master_fd is None:
+        if self._master_fd is None or self._eof:
             return False
         try:
             r, _, _ = select.select([self._master_fd], [], [], 0.0)
@@ -275,16 +319,34 @@ class TerminalDriver:
         deadline = time.monotonic() + limit
         last_activity = time.monotonic()
         while time.monotonic() < deadline:
+            if self._eof and not self.is_alive():
+                return
             if self.pump(min(0.02, quiet_period)):
                 last_activity = time.monotonic()
-            elif time.monotonic() - last_activity >= quiet_period:
+            elif time.monotonic() - last_activity >= quiet_period or self._eof:
                 return
 
-    def wait_ready(self, timeout: float | None = None) -> None:
-        """Wait until Tiny Commander completes initial alt-screen render."""
+    def wait_ready(
+        self,
+        timeout: float | None = None,
+        *,
+        require_alt_screen: bool | None = None,
+        require_panels: bool | None = None,
+    ) -> None:
+        """Wait until Tiny Commander completes initial UI render."""
+        req_alt = (
+            self.key_map.supports_alt_screen
+            if require_alt_screen is None
+            else require_alt_screen
+        )
+        req_panels = (
+            self.key_map.supports_cursor_addressing
+            if require_panels is None
+            else require_panels
+        )
         self.wait_until(
-            lambda scr: scr.in_alt_screen
-            and (scr.contains('[Left]') or scr.contains('[Right]'))
+            lambda scr: (not req_alt or scr.in_alt_screen)
+            and (not req_panels or scr.contains('[Left]') or scr.contains('[Right]'))
             and scr.contains('F10'),
             timeout=timeout,
             description='Tiny Commander startup',
@@ -318,27 +380,63 @@ class TerminalDriver:
             written = os.write(self._master_fd, view)
             view = view[written:]
 
-    def press(self, *keys: str, delay: float = 0.0) -> None:
+    def press(
+        self,
+        *keys: str,
+        delay: float = 0.0,
+        esc_settle: float = 0.05,
+    ) -> None:
         """Send one or more symbolic key presses (e.g. 'down', 'f10', 'ctrl+x')."""
         for idx, key in enumerate(keys):
-            if idx > 0 and delay > 0:
-                time.sleep(delay)
+            if idx > 0:
+                pause = delay
+                if keys[idx - 1].lower().strip() in ('esc', 'escape'):
+                    pause = max(pause, esc_settle)
+                if pause > 0:
+                    time.sleep(pause)
             self.send_bytes(self.key_map.encode(key))
+
+    def press_esc_settled(self, settle: float = 0.05) -> None:
+        """Send plain Escape and wait longer than ESCDELAY so it is not treated as Alt."""
+        self.press('esc')
+        time.sleep(settle)
+        self.pump(0.0)
 
     def type_text(self, text: str) -> None:
         """Send literal UTF-8 text input to the PTY."""
         self.send_bytes(text.encode('utf-8'))
+
+    def wait_mouse_settle(self, interval: float = 0.22) -> None:
+        """Wait past ncurses mouseinterval so prior clicks do not coalesce."""
+        if self._last_click is not None:
+            elapsed = time.monotonic() - self._last_click[0]
+            if elapsed < interval:
+                time.sleep(interval - elapsed)
+        self.pump(0.0)
 
     def click(
         self,
         x: int,
         y: int,
         button: MouseButton | int = MouseButton.LEFT,
+        *,
+        prevent_double_click_collapse: bool = True,
+        settle: bool = False,
     ) -> None:
         """Send a mouse click at 0-based screen coordinate (x, y)."""
+        btn_int = int(button)
+        if prevent_double_click_collapse and self._last_click is not None:
+            ts, lx, ly, lbtn = self._last_click
+            if (lx, ly, lbtn) == (x, y, btn_int):
+                elapsed = time.monotonic() - ts
+                if elapsed < 0.20:
+                    time.sleep(0.20 - elapsed)
         self.send_bytes(
-            MouseEncoder.encode_click(button, x, y, sgr=self.screen.sgr_mouse)
+            MouseEncoder.encode_click(btn_int, x, y, sgr=self.screen.sgr_mouse)
         )
+        self._last_click = (time.monotonic(), x, y, btn_int)
+        if settle:
+            self.wait_mouse_settle()
 
     def double_click(
         self,
@@ -349,10 +447,10 @@ class TerminalDriver:
         interval: float = 0.02,
     ) -> None:
         """Send two rapid clicks so curses synthesizes BUTTON*_DOUBLE_CLICKED."""
-        self.click(x, y, button)
+        self.click(x, y, button, prevent_double_click_collapse=True)
         if interval > 0:
             time.sleep(interval)
-        self.click(x, y, button)
+        self.click(x, y, button, prevent_double_click_collapse=False)
 
     def click_text(
         self,
@@ -363,13 +461,14 @@ class TerminalDriver:
         offset_x: int = 0,
         button: MouseButton | int = MouseButton.LEFT,
         timeout: float | None = None,
+        settle: bool = False,
     ) -> tuple[int, int]:
         """Locate ``needle`` on the rendered screen and click it."""
         col, found_row = self.wait_for_text(
             needle, timeout=timeout, row=row, occurrence=occurrence
         )
         target = (col + offset_x, found_row)
-        self.click(target[0], target[1], button=button)
+        self.click(target[0], target[1], button=button, settle=settle)
         return target
 
     def scroll(
@@ -384,19 +483,41 @@ class TerminalDriver:
         for _ in range(steps):
             self.send_bytes(seq)
 
+    def send_signal(self, sig: int) -> None:
+        """Deliver a signal (e.g. signal.SIGINT) to the child process group."""
+        if self._proc is not None and self.is_alive():
+            try:
+                os.killpg(self._proc.pid, sig)
+            except ProcessLookupError:
+                pass
+
     def resize(self, rows: int, cols: int) -> None:
         """Resize PTY and VirtualTerminal and deliver SIGWINCH."""
         if self._master_fd is None or self._proc is None:
             raise RuntimeError('TerminalDriver is not running')
         self.screen.resize(rows, cols)
         self._set_winsize(self._master_fd, rows, cols)
-        if self.is_alive():
-            try:
-                os.killpg(self._proc.pid, signal.SIGWINCH)
-            except ProcessLookupError:
-                pass
+        self.send_signal(signal.SIGWINCH)
 
-    def close(self) -> None:
+    def resize_and_wait(
+        self,
+        rows: int,
+        cols: int,
+        predicate: Callable[[VirtualTerminal], Any] | None = None,
+        timeout: float | None = None,
+    ) -> None:
+        """Resize terminal and wait until dimensions and optional predicate stabilize."""
+        self.resize(rows, cols)
+        self.wait_until(
+            lambda scr: scr.rows == rows
+            and scr.cols == cols
+            and (True if predicate is None else bool(predicate(scr))),
+            timeout=timeout,
+            description=f'resize to {rows}x{cols}',
+        )
+        self.wait_stable(quiet_period=0.03, timeout=0.4)
+
+    def close(self, *, sigterm_timeout: float = 0.15) -> None:
         """Terminate child process if running and release PTY and owned temp dirs."""
         try:
             if self._proc is not None and self._proc.poll() is None:
@@ -405,7 +526,7 @@ class TerminalDriver:
                 except ProcessLookupError:
                     pass
                 try:
-                    self._proc.wait(timeout=1.0)
+                    self._proc.wait(timeout=sigterm_timeout)
                 except subprocess.TimeoutExpired:
                     try:
                         os.killpg(self._proc.pid, signal.SIGKILL)
@@ -420,5 +541,8 @@ class TerminalDriver:
                     pass
                 self._master_fd = None
             for d in self._temp_dirs:
-                shutil.rmtree(d, ignore_errors=True)
+                try:
+                    _rmtree_force(d)
+                except OSError:
+                    pass
             self._temp_dirs.clear()
