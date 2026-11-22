@@ -90,11 +90,25 @@ Press `Alt+Enter` to insert the currently selected filename.
 On first use, tnc creates `~/.config/tnc/config` to store your preferences:
 
 ```
-editor = nano
+editor = micro
 pager = less
 ```
 
-Environment variables (`$EDITOR`, `$PAGER`) take precedence over config file settings.
+Environment variables (`$VISUAL`, `$EDITOR`, `$PAGER`) take precedence over config file settings. For editing (`F4` / `Shift+F4`), tnc resolves your editor in this order:
+
+1. `$VISUAL`
+2. `$EDITOR`
+3. `editor` in `~/.config/tnc/config`
+4. First detected editor from the supported list below (pre-focused in the first-run prompt)
+5. `vi` fallback
+
+#### Supported Editors
+
+tnc auto-detects installed editors on `PATH` and offers them in Options → Editor settings (or on first `F4` use):
+
+- **Terminal editors (priority order):** `micro`, `ne`, `hx` / `helix`, `kak` (`kakoune`), `nvim` (`neovim`), `nano`, `vim`, `emacs -nw`, `vi`
+- **macOS GUI editors:** `TextEdit` (`open -e`), `subl`, `mate`, `code`
+- **Custom commands:** Choose `Custom...` in the selection dialog or set `$VISUAL` / `$EDITOR` / `editor` with flags (e.g. `emacs -nw` or `code --wait`).
 
 ## Development
 

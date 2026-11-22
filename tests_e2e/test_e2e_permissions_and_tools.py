@@ -227,6 +227,109 @@ class TestExternalEditorAndPagerE2E(unittest.TestCase):
         self.assertTrue(config_file.exists())
         self.assertIn(f'editor = {custom_editor.path}', config_file.read_text(encoding='utf-8'))
 
+    def test_f4_visual_precedence_over_editor_and_config(self) -> None:
+        _, work, home, tools = _make_workspace(self)
+        target = work / 'visual_note.txt'
+        target.write_text('start', encoding='utf-8')
+
+        visual_ed = ExternalToolStub.create(tools, 'visual_ed', append_text='_via_visual')
+        env_ed = ExternalToolStub.create(tools, 'env_ed', append_text='_via_editor')
+        cfg_ed = ExternalToolStub.create(tools, 'cfg_ed', append_text='_via_cfg')
+
+        cfg_path = home / '.config' / 'tnc' / 'config'
+        cfg_path.parent.mkdir(parents=True, exist_ok=True)
+        cfg_path.write_text(f'editor = {cfg_ed.path}\n', encoding='utf-8')
+
+        env = _isolated_env(home, VISUAL=str(visual_ed.path), EDITOR=str(env_ed.path))
+        with TerminalDriver(rows=24, cols=100, cwd=work, home=home, env=env) as term:
+            term.wait_ready()
+            _navigate_to_entry(term, 'visual_note.txt')
+            term.press('f4')
+            term.wait_until(
+                lambda _s: len(visual_ed.calls()) == 1,
+                description='$VISUAL editor invocation',
+            )
+            term.wait_ready(require_alt_screen=True)
+            _quit_cleanly(self, term)
+
+        self.assertEqual(len(visual_ed.calls()), 1)
+        self.assertEqual(len(env_ed.calls()), 0)
+        self.assertEqual(len(cfg_ed.calls()), 0)
+        self.assertEqual(target.read_text(encoding='utf-8'), 'start_via_visual')
+
+    def test_f4_auto_detects_new_editors_in_priority_and_runs_emacs_nw(self) -> None:
+        _, work, home, tools = _make_workspace(self)
+        target = work / 'edit_me.txt'
+        target.write_text('init', encoding='utf-8')
+
+        bin_dir = tools / 'path_bin'
+        micro_stub = ExternalToolStub.create(bin_dir, 'micro', append_text='_micro')
+        ExternalToolStub.create(bin_dir, 'hx', append_text='_hx')
+        emacs_stub = ExternalToolStub.create(bin_dir, 'emacs', append_text='_emacs')
+        ExternalToolStub.create(bin_dir, 'vi', append_text='_vi')
+
+        config_file = home / '.config' / 'tnc' / 'config'
+        env = _isolated_env(home, PATH=str(bin_dir))
+
+        with TerminalDriver(rows=24, cols=100, cwd=work, home=home, env=env) as term:
+            term.wait_ready()
+            _navigate_to_entry(term, 'edit_me.txt')
+
+            # First-run F4 opens Select Editor with detected editors in priority order
+            term.press('f4')
+            term.wait_for_text('Select Editor')
+            term.wait_for_text('1. micro')
+            term.wait_for_text('2. hx')
+            term.wait_for_text('3. emacs -nw')
+            term.wait_for_text('4. vi')
+            self.assertIsNotNone(term.screen.find_styled_text('1. micro', reverse=True))
+
+            # Confirm pre-focused highest-priority detected editor ('micro')
+            term.press('enter')
+            term.wait_until(
+                lambda _s: len(micro_stub.calls()) == 1,
+                description='auto-detected micro invocation',
+            )
+            term.wait_ready(require_alt_screen=True)
+            self.assertIn('editor = micro', config_file.read_text(encoding='utf-8'))
+
+            # Switch configured editor to 'emacs -nw' via Options -> Editor settings
+            term.press('f2')
+            term.wait_for_text('Sort by name')
+            term.press('right', 'right', 'right')
+            term.wait_for_text('Editor settings')
+            term.press('enter')
+            term.wait_for_text('Select Editor')
+            self.assertIsNotNone(term.screen.find_styled_text('1. micro', reverse=True))
+
+            term.press('down', 'down')
+            term.wait_until(
+                lambda s: s.find_styled_text('3. emacs -nw', reverse=True) is not None,
+                description='emacs -nw focused in Select Editor',
+            )
+            term.press('enter')
+            term.wait_until(
+                lambda s: not s.contains('Select Editor'),
+                description='Select Editor closed after selecting emacs -nw',
+            )
+            self.assertIn('editor = emacs -nw', config_file.read_text(encoding='utf-8'))
+
+            # Press F4 again and verify emacs is invoked with -nw and file path
+            term.press('f4')
+            term.wait_until(
+                lambda _s: len(emacs_stub.calls()) == 1,
+                description='emacs -nw invocation',
+            )
+            term.wait_ready(require_alt_screen=True)
+
+            _quit_cleanly(self, term)
+
+        emacs_calls = emacs_stub.calls()
+        self.assertEqual(len(emacs_calls), 1)
+        self.assertEqual(emacs_calls[0]['argv'][0], '-nw')
+        self.assertEqual(Path(emacs_calls[0]['argv'][-1]).resolve(), target.resolve())
+        self.assertEqual(target.read_text(encoding='utf-8'), 'init_micro_emacs')
+
     def test_f3_opens_pager_with_flag_and_surfaces_nonzero_exit(self) -> None:
         _, work, home, tools = _make_workspace(self)
         target = work / 'readme.txt'

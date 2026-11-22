@@ -27,7 +27,7 @@ class TestNeedsSetup(unittest.TestCase):
     def test_no_editor_setup_when_env_set(self):
         """No editor setup needed when EDITOR env is set."""
         from tnc.config import Config
-        with mock.patch.dict(os.environ, {'EDITOR': 'vim'}):
+        with mock.patch.dict(os.environ, {'EDITOR': 'vim'}, clear=True):
             config = Config()
             self.assertFalse(config.needs_editor_setup())
 
@@ -61,7 +61,7 @@ class TestGetEditorPager(unittest.TestCase):
     def test_get_editor_prefers_env(self):
         """EDITOR env should take precedence over config."""
         from tnc.config import Config
-        with mock.patch.dict(os.environ, {'EDITOR': 'vim'}):
+        with mock.patch.dict(os.environ, {'EDITOR': 'vim'}, clear=True):
             config = Config()
             config.editor = 'nano'
             self.assertEqual(config.get_editor(), 'vim')
@@ -127,13 +127,13 @@ class TestAvailablePrograms(unittest.TestCase):
     """Test detection of available editors/pagers on system."""
 
     def test_get_available_editors_filters_installed(self):
-        """Only returns editors that exist on system (Linux)."""
+        """Only returns editors that exist on system in priority order (Linux)."""
         from tnc.config import Config
         with mock.patch('tnc.config.sys.platform', 'linux'):
             with mock.patch('tnc.config.shutil.which') as mock_which:
                 mock_which.side_effect = lambda cmd: cmd if cmd in ['vi', 'nano'] else None
                 result = Config.get_available_editors()
-                self.assertEqual(result, ['vi', 'nano'])
+                self.assertEqual(result, ['nano', 'vi'])
 
     def test_get_available_editors_returns_empty_when_none_found(self):
         """Returns empty list when no editors installed (Linux)."""
@@ -284,6 +284,158 @@ class TestSaveFromSetup(unittest.TestCase):
 
             loaded = Config.load(str(config_path))
             self.assertEqual(loaded.pager, 'less')
+
+
+class TestExtendedEditorsIssue73(unittest.TestCase):
+    """Tests for expanded editor detection, $VISUAL precedence, and fallback chain (#73)."""
+
+    def test_editor_options_linux_priority_order(self):
+        """get_editor_options on Linux returns known terminal editors in modern-TUI-first order."""
+        from tnc.config import Config
+        with mock.patch('tnc.config.sys.platform', 'linux'):
+            self.assertEqual(
+                Config.get_editor_options(),
+                ['micro', 'ne', 'hx', 'kak', 'nvim', 'nano', 'vim', 'emacs -nw', 'vi'],
+            )
+
+    def test_editor_options_macos_appends_gui_editors(self):
+        """get_editor_options on macOS appends GUI editors after terminal editors."""
+        from tnc.config import Config
+        with mock.patch('tnc.config.sys.platform', 'darwin'):
+            self.assertEqual(
+                Config.get_editor_options(),
+                [
+                    'micro', 'ne', 'hx', 'kak', 'nvim', 'nano', 'vim', 'emacs -nw', 'vi',
+                    'TextEdit', 'subl', 'mate', 'code',
+                ],
+            )
+
+    def test_get_available_editors_all_terminal_editors_priority_order(self):
+        """Auto-detection returns all supported terminal editors in modern-TUI-first order."""
+        from tnc.config import Config
+        with mock.patch('tnc.config.sys.platform', 'linux'), \
+             mock.patch('tnc.config.shutil.which', side_effect=lambda cmd: f'/usr/bin/{cmd}'):
+            self.assertEqual(
+                Config.get_available_editors(),
+                ['micro', 'ne', 'hx', 'kak', 'nvim', 'nano', 'vim', 'emacs -nw', 'vi'],
+            )
+
+    def test_get_available_editors_helix_binary_detection_and_dedup(self):
+        """Helix detects hx or helix without duplicating when both exist."""
+        from tnc.config import Config
+        with mock.patch('tnc.config.sys.platform', 'linux'):
+            with mock.patch('tnc.config.shutil.which', side_effect=lambda c: c if c == 'hx' else None):
+                self.assertEqual(Config.get_available_editors(), ['hx'])
+
+            with mock.patch('tnc.config.shutil.which', side_effect=lambda c: c if c == 'helix' else None):
+                self.assertEqual(Config.get_available_editors(), ['helix'])
+
+            with mock.patch('tnc.config.shutil.which', side_effect=lambda c: c if c in ('hx', 'helix') else None):
+                self.assertEqual(Config.get_available_editors(), ['hx'])
+
+    def test_get_available_editors_emacs_checks_emacs_binary_returns_emacs_nw(self):
+        """Terminal Emacs checks shutil.which('emacs') and formats as 'emacs -nw'."""
+        from tnc.config import Config
+        which_calls = []
+
+        def fake_which(cmd):
+            which_calls.append(cmd)
+            return '/usr/bin/emacs' if cmd == 'emacs' else None
+
+        with mock.patch('tnc.config.sys.platform', 'linux'), \
+             mock.patch('tnc.config.shutil.which', side_effect=fake_which):
+            self.assertEqual(Config.get_available_editors(), ['emacs -nw'])
+            self.assertIn('emacs', which_calls)
+            self.assertNotIn('emacs -nw', which_calls)
+
+    def test_get_available_editors_macos_gui_after_terminal(self):
+        """On macOS, GUI editors follow detected terminal editors."""
+        from tnc.config import Config
+        installed = {'micro', 'vi', 'open', 'code'}
+        with mock.patch('tnc.config.sys.platform', 'darwin'), \
+             mock.patch('tnc.config.shutil.which', side_effect=lambda c: c if c in installed else None):
+            self.assertEqual(
+                Config.get_available_editors(),
+                ['micro', 'vi', 'TextEdit', 'code'],
+            )
+
+    def test_visual_env_precedence_and_whitespace_handling(self):
+        """$VISUAL overrides $EDITOR and config; blank values fall through; whitespace is trimmed."""
+        from tnc.config import Config
+        config = Config()
+        config.editor = 'nano'
+
+        with mock.patch.dict(os.environ, {'VISUAL': 'micro', 'EDITOR': 'vim'}, clear=True):
+            self.assertFalse(config.needs_editor_setup())
+            self.assertEqual(config.get_editor(), 'micro')
+
+        with mock.patch.dict(os.environ, {'VISUAL': '   ', 'EDITOR': '  hx  '}, clear=True):
+            self.assertFalse(config.needs_editor_setup())
+            self.assertEqual(config.get_editor(), 'hx')
+
+        with mock.patch.dict(os.environ, {'VISUAL': '   ', 'EDITOR': ''}, clear=True):
+            config_empty = Config()
+            self.assertTrue(config_empty.needs_editor_setup())
+            self.assertIsNone(config_empty.get_editor())
+
+        with mock.patch.dict(os.environ, {'VISUAL': '  emacs -nw  '}, clear=True):
+            config_empty = Config()
+            self.assertFalse(config_empty.needs_editor_setup())
+            self.assertEqual(config_empty.get_editor(), 'emacs -nw')
+
+    def test_resolve_editor_fallback_chain(self):
+        """resolve_editor follows $VISUAL -> $EDITOR -> config -> first detected -> vi."""
+        from tnc.config import Config
+
+        def which_micro_vi(cmd):
+            return cmd if cmd in ('micro', 'vi') else None
+
+        with mock.patch('tnc.config.sys.platform', 'darwin'), \
+             mock.patch('tnc.config.shutil.which', side_effect=which_micro_vi):
+            cfg = Config()
+            cfg.editor = 'nano'
+
+            with mock.patch.dict(os.environ, {'VISUAL': 'kak', 'EDITOR': 'vim'}, clear=True):
+                self.assertEqual(cfg.resolve_editor(), 'kak')
+
+            with mock.patch.dict(os.environ, {'EDITOR': 'vim'}, clear=True):
+                self.assertEqual(cfg.resolve_editor(), 'vim')
+
+            with mock.patch.dict(os.environ, {}, clear=True):
+                self.assertEqual(cfg.resolve_editor(), 'nano')
+
+            cfg_unset = Config()
+            with mock.patch.dict(os.environ, {}, clear=True):
+                self.assertEqual(cfg_unset.resolve_editor(), 'micro')
+
+        # Even when macOS 'open' exists (TextEdit available) with no terminal editors,
+        # resolve_editor falls back to 'vi' rather than a GUI editor.
+        with mock.patch('tnc.config.sys.platform', 'darwin'), \
+             mock.patch('tnc.config.shutil.which', side_effect=lambda c: c if c == 'open' else None):
+            cfg_unset = Config()
+            with mock.patch.dict(os.environ, {}, clear=True):
+                self.assertEqual(cfg_unset.resolve_editor(), 'vi')
+
+    def test_get_editor_command_mappings_and_aliases(self):
+        """get_editor_command passes standard commands through and resolves friendly aliases."""
+        from tnc.config import Config
+        for cmd in ('micro', 'ne', 'nvim', 'kak', 'emacs -nw', 'vim', 'nano', 'vi'):
+            self.assertEqual(Config.get_editor_command(cmd), cmd)
+
+        self.assertEqual(Config.get_editor_command('neovim'), 'nvim')
+        self.assertEqual(Config.get_editor_command('kakoune'), 'kak')
+
+        with mock.patch('tnc.config.shutil.which', side_effect=lambda c: c if c == 'hx' else None):
+            self.assertEqual(Config.get_editor_command('helix'), 'hx')
+            self.assertEqual(Config.get_editor_command('hx'), 'hx')
+
+        with mock.patch('tnc.config.shutil.which', side_effect=lambda c: c if c == 'helix' else None):
+            self.assertEqual(Config.get_editor_command('helix'), 'helix')
+            self.assertEqual(Config.get_editor_command('hx'), 'helix')
+
+        with mock.patch('tnc.config.shutil.which', return_value=None):
+            self.assertEqual(Config.get_editor_command('helix'), 'helix')
+            self.assertEqual(Config.get_editor_command('hx'), 'hx')
 
 
 if __name__ == '__main__':

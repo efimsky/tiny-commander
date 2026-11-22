@@ -17,12 +17,12 @@ from tnc.app import Action, App
 
 
 class _IsolatedEditTestCase(unittest.TestCase):
-    """Base test case isolating EDITOR env and Config.default_path."""
+    """Base test case isolating VISUAL, EDITOR env and Config.default_path."""
 
     def setUp(self) -> None:
         super().setUp()
         self.enterContext(isolated_config())
-        self.enterContext(isolated_env('EDITOR'))
+        self.enterContext(isolated_env('VISUAL', 'EDITOR'))
 
 
 class TestEditFileCalls(_IsolatedEditTestCase):
@@ -288,6 +288,141 @@ class TestEditEditorNotFound(_IsolatedEditTestCase):
 
                 self.assertFalse(result.success)
                 self.assertIn('not found', result.error.lower())
+
+
+class TestExtendedEditorSupport(_IsolatedEditTestCase):
+    """Tests for $VISUAL, newly supported editors, and setup fallback/pre-focus (#73)."""
+
+    @mock.patch('curses.has_colors', return_value=False)
+    @mock.patch('curses.curs_set')
+    @mock.patch('curses.endwin')
+    @mock.patch('tnc.app.subprocess.run')
+    def test_edit_uses_visual_over_editor_and_config(self, mock_run, _endwin, _curs_set, _has_colors):
+        """$VISUAL should take precedence over $EDITOR and config.editor."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            test_file = Path(tmpdir) / 'test.txt'
+            test_file.write_text('test content')
+
+            with mock.patch('os.getcwd', return_value=tmpdir), \
+                 mock.patch.dict(os.environ, {'VISUAL': 'micro', 'EDITOR': 'vim'}):
+                app = App(create_mock_stdscr())
+                app.setup()
+                app.config.editor = 'nano'
+                app.active_panel.cursor = find_entry_index(app.active_panel, 'test.txt')
+
+                app.edit_current_file()
+
+                args = mock_run.call_args[0][0]
+                self.assertEqual(args[0], 'micro')
+
+    @mock.patch('curses.has_colors', return_value=False)
+    @mock.patch('curses.curs_set')
+    @mock.patch('curses.endwin')
+    @mock.patch('tnc.app.subprocess.run')
+    def test_edit_whitespace_visual_falls_back_to_editor(self, mock_run, _endwin, _curs_set, _has_colors):
+        """Whitespace-only $VISUAL should fall back to $EDITOR."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            test_file = Path(tmpdir) / 'test.txt'
+            test_file.write_text('test content')
+
+            with mock.patch('os.getcwd', return_value=tmpdir), \
+                 mock.patch.dict(os.environ, {'VISUAL': '   ', 'EDITOR': 'ne'}):
+                app = App(create_mock_stdscr())
+                app.setup()
+                app.active_panel.cursor = find_entry_index(app.active_panel, 'test.txt')
+
+                app.edit_current_file()
+
+                args = mock_run.call_args[0][0]
+                self.assertEqual(args[0], 'ne')
+
+    @mock.patch('curses.has_colors', return_value=False)
+    @mock.patch('curses.curs_set')
+    @mock.patch('curses.endwin')
+    @mock.patch('tnc.app.subprocess.run')
+    def test_edit_emacs_nw_splits_flag(self, mock_run, _endwin, _curs_set, _has_colors):
+        """emacs -nw should invoke subprocess.run with ['emacs', '-nw', <file>]."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            test_file = Path(tmpdir) / 'test.txt'
+            test_file.write_text('test content')
+
+            with mock.patch('os.getcwd', return_value=tmpdir):
+                app = App(create_mock_stdscr())
+                app.setup()
+                app.config.editor = 'emacs -nw'
+                app.active_panel.cursor = find_entry_index(app.active_panel, 'test.txt')
+
+                app.edit_current_file()
+
+                args = mock_run.call_args[0][0]
+                self.assertEqual(args[:2], ['emacs', '-nw'])
+                self.assertEqual(Path(args[2]).resolve(), test_file.resolve())
+
+    @mock.patch('curses.has_colors', return_value=False)
+    @mock.patch('curses.curs_set')
+    @mock.patch('curses.endwin')
+    @mock.patch('tnc.app.subprocess.run')
+    def test_edit_supports_new_terminal_editors_and_aliases(self, mock_run, _endwin, _curs_set, _has_colors):
+        """micro, ne, hx, kak, nvim and aliases neovim/kakoune invoke expected binaries."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            test_file = Path(tmpdir) / 'test.txt'
+            test_file.write_text('test content')
+
+            cases = [
+                ('micro', 'micro'),
+                ('ne', 'ne'),
+                ('hx', 'hx'),
+                ('kak', 'kak'),
+                ('nvim', 'nvim'),
+                ('neovim', 'nvim'),
+                ('kakoune', 'kak'),
+            ]
+            for configured, expected_bin in cases:
+                with self.subTest(configured=configured):
+                    mock_run.reset_mock()
+                    with mock.patch('os.getcwd', return_value=tmpdir):
+                        app = App(create_mock_stdscr())
+                        app.setup()
+                        app.config.editor = configured
+                        app.active_panel.cursor = find_entry_index(app.active_panel, 'test.txt')
+
+                        app.edit_current_file()
+
+                        args = mock_run.call_args[0][0]
+                        self.assertEqual(args[0], expected_bin)
+                        self.assertEqual(Path(args[1]).resolve(), test_file.resolve())
+
+    @mock.patch('curses.has_colors', return_value=False)
+    @mock.patch('curses.curs_set')
+    def test_prompt_editor_setup_falls_back_to_vi_when_none_detected(self, _curs_set, _has_colors):
+        """When no editors are detected on PATH, _prompt_editor_setup offers ['vi'] + Custom..."""
+        stdscr = create_mock_stdscr()
+        stdscr.getch.return_value = ord('\n')  # Confirm focused first item ('vi')
+        with mock.patch('tnc.config.Config.get_available_editors', return_value=[]):
+            app = App(stdscr)
+            app.setup()
+            app._prompt_editor_setup()
+
+        self.assertEqual(app.config.editor, 'vi')
+
+    @mock.patch('curses.has_colors', return_value=False)
+    @mock.patch('curses.curs_set')
+    def test_prompt_editor_setup_prefocuses_current_editor(self, _curs_set, _has_colors):
+        """_prompt_editor_setup pre-focuses configured editor or 0 if unset/absent."""
+        with mock.patch('tnc.config.Config.get_available_editors', return_value=['micro', 'vim', 'vi']), \
+             mock.patch('tnc.app.SelectionDialog') as mock_dlg:
+            mock_dlg.return_value.show.return_value = None
+            app = App(create_mock_stdscr())
+            app.setup()
+
+            app.config.editor = 'vim'
+            app._prompt_editor_setup()
+            self.assertEqual(mock_dlg.call_args.kwargs.get('initial_focused'), 1)
+
+            mock_dlg.reset_mock()
+            app.config.editor = None
+            app._prompt_editor_setup()
+            self.assertEqual(mock_dlg.call_args.kwargs.get('initial_focused'), 0)
 
 
 if __name__ == '__main__':
