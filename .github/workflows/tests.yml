@@ -31,4 +31,4 @@ jobs:
         run: python -m unittest discover -s tests -v
 
       - name: Run E2E PTY tests
-        run: env -u PAGER -u EDITOR python -m unittest discover -s tests_e2e -v
+        run: env -u PAGER -u EDITOR -u VISUAL python -m unittest discover -s tests_e2e -v

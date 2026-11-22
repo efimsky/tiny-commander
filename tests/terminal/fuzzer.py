@@ -9,6 +9,7 @@ from pathlib import Path
 import random
 import shutil
 import stat
+import sys
 import tempfile
 from typing import Any, Callable, Sequence
 
@@ -337,9 +338,11 @@ class SandboxDriverFactory:
                     env=merged_env,
                 )
             else:
+                command = [sys.executable, '-m', 'tnc', *spawn_args] if spawn_args else None
                 driver = TerminalDriver(
                     cwd=work_dir,
-                    args=spawn_args,
+                    home=home_dir,
+                    command=command,
                     rows=self.rows,
                     cols=self.cols,
                     term=self.term,

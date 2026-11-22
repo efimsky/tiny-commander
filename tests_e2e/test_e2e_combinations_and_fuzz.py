@@ -21,20 +21,6 @@ from tests.terminal import (
 )
 
 
-def _sandbox_driver(
-    *,
-    cwd: Path,
-    args: list[str] | tuple[str, ...] = (),
-    rows: int = 24,
-    cols: int = 80,
-    term: str = 'xterm-256color',
-    env: dict[str, str | None] | None = None,
-) -> TerminalDriver:
-    """Adapt SandboxDriverFactory's call signature to TerminalDriver."""
-    del args
-    return TerminalDriver(cwd=cwd, rows=rows, cols=cols, term=term, env=env)
-
-
 def _make_tools_setup(extra_setup=None):
     """Build a SandboxDriverFactory setup_fn with isolated noop editor/pager stubs."""
     def _setup(work_dir: Path, home_dir: Path) -> dict[str, str | None]:
@@ -469,7 +455,7 @@ class TestFuzzCampaignsE2E(unittest.TestCase):
     ) -> SandboxDriverFactory:
         return SandboxDriverFactory(
             setup_fn=_make_tools_setup(_populate_mixed_fixture),
-            driver_factory=driver_factory or _sandbox_driver,
+            driver_factory=driver_factory,
             canaries={'secret.txt': 'CANARY_DO_NOT_TOUCH'},
             rows=rows,
             cols=cols,
@@ -635,9 +621,9 @@ class TestFuzzCampaignsE2E(unittest.TestCase):
             env: dict[str, str | None] | None = None,
         ) -> TerminalDriver:
             created_roots.append(str(cwd.parent))
-            return _sandbox_driver(
+            del args
+            return TerminalDriver(
                 cwd=cwd,
-                args=args,
                 rows=rows,
                 cols=cols,
                 term=term,
