@@ -2,6 +2,7 @@
 
 import os
 import shutil
+import stat
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum, auto
@@ -308,11 +309,14 @@ def chmod_recursive(
     """
     target = Path(path)
 
-    if not target.exists():
+    if not target.exists() and not target.is_symlink():
         return ChmodResult(
             success=False,
             error=f'{path}: No such file or directory'
         )
+
+    if target.is_symlink():
+        return ChmodResult(success=True)
 
     if file_mode is None:
         file_mode = dir_mode
@@ -335,7 +339,10 @@ def chmod_recursive(
                 changed.append(str(p))
                 continue
 
-            if p.is_dir() and not p.is_symlink():
+            if p.is_symlink():
+                continue
+
+            if p.is_dir():
                 try:
                     children = list(p.iterdir())
                 except OSError as err:
@@ -430,6 +437,24 @@ def _is_dest_inside_source(source_path: Path, dest_path: Path) -> bool:
     return resolved_source in resolved_dest.parents
 
 
+def _is_special_mode(mode: int) -> bool:
+    """Return True when st_mode is a special file (FIFO, socket, block/char device)."""
+    return (
+        stat.S_ISFIFO(mode)
+        or stat.S_ISSOCK(mode)
+        or stat.S_ISBLK(mode)
+        or stat.S_ISCHR(mode)
+    )
+
+
+def _copy_regular_file(src: str | Path, dst: str | Path) -> None:
+    """Copy a non-directory, non-symlink entry, refusing special files."""
+    src_path = Path(src)
+    if _is_special_mode(src_path.lstat().st_mode):
+        raise OSError(f'Cannot copy special file: {src_path.name}')
+    shutil.copy2(src, dst)
+
+
 def _copy_item(source_path: Path, dest_path: Path) -> None:
     """Copy a single file or directory with proper handling for different types.
 
@@ -437,20 +462,23 @@ def _copy_item(source_path: Path, dest_path: Path) -> None:
         source_path: Full path to source item.
         dest_path: Full path to destination item.
     """
-    if source_path.is_symlink():
+    mode = source_path.lstat().st_mode
+    if stat.S_ISLNK(mode):
         # Copy symlink as symlink
         link_target = os.readlink(source_path)
         if dest_path.exists() or dest_path.is_symlink():
             dest_path.unlink()
         os.symlink(link_target, dest_path)
-    elif source_path.is_dir():
+    elif stat.S_ISDIR(mode):
         # Copy directory recursively
         shutil.copytree(
             source_path,
             dest_path,
             symlinks=True,
-            copy_function=shutil.copy2
+            copy_function=_copy_regular_file,
         )
+    elif _is_special_mode(mode):
+        raise OSError(f'Cannot copy special file: {source_path.name}')
     else:
         # Copy file preserving metadata
         shutil.copy2(source_path, dest_path)
@@ -637,7 +665,7 @@ def calculate_dir_size(path: str | Path) -> int:
     """
     path = Path(path)
 
-    if not path.exists():
+    if not path.exists() and not path.is_symlink():
         return -1
 
     # If it's a file or symlink, return its size
@@ -648,19 +676,26 @@ def calculate_dir_size(path: str | Path) -> int:
             return -1
 
     total = 0
-    try:
-        for item in path.rglob('*'):
-            try:
-                # Use lstat to not follow symlinks
-                stat_info = item.lstat()
-                # Only count files and symlinks, not directories
-                if not item.is_dir():
-                    total += stat_info.st_size
-            except OSError:
-                # Skip files we can't stat (permission denied, etc.)
-                continue
-    except OSError:
-        return -1
+    stack: list[Path | str] = [path]
+    is_root = True
+    while stack:
+        current = stack.pop()
+        try:
+            with os.scandir(current) as it:
+                is_root = False
+                for entry in it:
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            stack.append(entry.path)
+                        else:
+                            total += entry.stat(follow_symlinks=False).st_size
+                    except OSError:
+                        # Skip entries we can't stat (permission denied, etc.)
+                        continue
+        except OSError:
+            if is_root:
+                return -1
+            continue
 
     return total
 
@@ -733,11 +768,11 @@ def delete_files(filenames: list[str], parent_dir: str | Path) -> DeleteResult:
                 errors.append(f'{filename}: File not found')
                 continue
 
-            if target.is_symlink() or target.is_file():
-                target.unlink()
-            else:
+            if target.is_dir() and not target.is_symlink():
                 # Directory - remove recursively
                 shutil.rmtree(target)
+            else:
+                target.unlink()
 
             deleted.append(filename)
 
@@ -763,13 +798,12 @@ def _type_mismatch_error(
     """Return an error string when source and destination have incompatible types.
 
     Symlinks are treated as their own kind so that overwriting a symlink with
-    a real file/directory still goes through the normal overwrite prompt.
+    a real file/directory still goes through the normal overwrite prompt, while
+    overwriting a real directory or file with a symlink is refused.
     """
     src_kind = _path_kind(source_path)
     dst_kind = _path_kind(dest_path)
-    if src_kind == dst_kind:
-        return None
-    if 'symlink' in (src_kind, dst_kind):
+    if src_kind == dst_kind or dst_kind == 'symlink':
         return None
     return (
         f'Refusing to {operation_name} {src_kind} over existing {dst_kind} '
@@ -793,7 +827,13 @@ def _move_aside(dest_path: Path) -> Path | None:
     if not (dest_path.exists() or dest_path.is_symlink()):
         return None
     for attempt in range(100):
-        sidecar = dest_path.with_name(f'{dest_path.name}.tnc-replace-{os.getpid()}-{attempt}')
+        suffix = f'.tnc-replace-{os.getpid()}-{attempt}'
+        max_prefix_bytes = max(0, 255 - len(suffix.encode('utf-8')))
+        prefix = (
+            dest_path.name.encode('utf-8', errors='ignore')[:max_prefix_bytes]
+            .decode('utf-8', errors='ignore')
+        )
+        sidecar = dest_path.with_name(f'{prefix}{suffix}')
         if sidecar.exists() or sidecar.is_symlink():
             continue
         os.rename(dest_path, sidecar)
@@ -832,6 +872,16 @@ def _drop_sidecar(sidecar: Path | None) -> None:
             sidecar.unlink()
         except OSError:
             pass
+
+
+def _safe_stat(path: Path) -> os.stat_result:
+    """Return lstat for symlinks, or stat falling back to lstat on OSError."""
+    if path.is_symlink():
+        return path.lstat()
+    try:
+        return path.stat()
+    except OSError:
+        return path.lstat()
 
 
 def _process_files_with_overwrite(
@@ -910,10 +960,10 @@ def _process_files_with_overwrite(
                     errors.append(f'{filename}: {mismatch}')
                     continue
 
-                source_stat = source_path.stat()
-                dest_stat = dest_path.stat()
-                source_size = source_stat.st_size if source_path.is_file() else 0
-                dest_size = dest_stat.st_size if dest_path.is_file() else 0
+                source_stat = _safe_stat(source_path)
+                dest_stat = _safe_stat(dest_path)
+                source_size = source_stat.st_size if stat.S_ISREG(source_stat.st_mode) else 0
+                dest_size = dest_stat.st_size if stat.S_ISREG(dest_stat.st_mode) else 0
                 source_mtime = source_stat.st_mtime
                 dest_mtime = dest_stat.st_mtime
 
@@ -936,6 +986,7 @@ def _process_files_with_overwrite(
                         error='Operation cancelled',
                         cancelled=True,
                         skipped_files=skipped,
+                        errors=list(errors),
                         **{result_attr: processed}
                     )
                 elif decision == 'skip':
@@ -1068,7 +1119,7 @@ def rename_file(parent_dir: str | Path, old_name: str, new_name: str) -> RenameR
     # there is no separate destination.
     if new_path.exists() or new_path.is_symlink():
         try:
-            same_inode = old_path.samefile(new_path)
+            same_inode = os.path.samestat(old_path.lstat(), new_path.lstat())
         except OSError:
             same_inode = False
         if not same_inode:
