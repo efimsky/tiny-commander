@@ -87,6 +87,20 @@ class DialogProvider(Protocol):
         ...
 
 
+def _clamp_modal_width(width: int, cols: int) -> int:
+    """Clamp modal width to fit within terminal columns with 1-char margins."""
+    max_width = cols - 2
+    if width > max_width:
+        return max(max_width, 20)
+    return width
+
+
+def _format_bordered_line(content: str, width: int) -> str:
+    """Format a content line padded or truncated to fit inside side borders."""
+    inner_width = max(width - 4, 0)
+    return '│ ' + content[:inner_width].ljust(inner_width) + ' │'
+
+
 def _render_dialog_frame(width: int, title: str = '') -> dict:
     """Generate common dialog frame elements.
 
@@ -103,22 +117,20 @@ def _render_dialog_frame(width: int, title: str = '') -> dict:
         - title_content: Centered title text (without borders)
         - content_line: Function to create padded content line
     """
-    inner = width - 2
+    inner = max(width - 2, 0)
 
     def content_line(text: str) -> str:
         """Create a content line with side borders and padding."""
-        return '│ ' + text.ljust(inner - 2) + ' │'
+        return _format_bordered_line(text, width)
 
     return {
         'top': '┌' + '─' * inner + '┐',
         'bottom': '└' + '─' * inner + '┘',
         'separator': '├' + '─' * inner + '┤',
         'empty': '│' + ' ' * inner + '│',
-        'title_content': title.center(inner),
+        'title_content': title[:inner].center(inner),
         'content_line': content_line,
     }
-
-
 
 
 def format_time(mtime: float) -> str:
@@ -128,9 +140,13 @@ def format_time(mtime: float) -> str:
         mtime: Unix timestamp.
 
     Returns:
-        Formatted date string (e.g., "2024-01-15 14:32").
+        Formatted date string (e.g., "2024-01-15 14:32"), or placeholder
+        if the timestamp cannot be represented.
     """
-    dt = datetime.fromtimestamp(mtime)
+    try:
+        dt = datetime.fromtimestamp(mtime)
+    except (OverflowError, OSError, ValueError):
+        return '????-??-?? ??:??'
     return dt.strftime('%Y-%m-%d %H:%M')
 
 
@@ -162,9 +178,7 @@ def draw_modal(
         height += 2  # footer separator + footer line
 
     # Ensure width fits with margin on narrow terminals
-    max_width = cols - 2  # Leave 1 char margin on each side
-    if width > max_width:
-        width = max(max_width, 20)  # Minimum usable width
+    width = _clamp_modal_width(width, cols)
 
     # Center the modal
     y = (rows - height) // 2
@@ -211,6 +225,25 @@ def draw_modal(
     return (y, x)
 
 
+def _render_modal_with_buttons(
+    win: Any,
+    title: str,
+    body: list[str],
+    width: int,
+    button_bar: ButtonBar,
+) -> None:
+    """Draw a modal box with a ButtonBar overlaid on its last body line."""
+    _, cols = win.getmaxyx()
+    box_y, box_x = draw_modal(win, title, body, width=width)
+    btn_y = box_y + 3 + len(body) - 1
+    total_width = _clamp_modal_width(width, cols) - 4
+    button_bar.render(
+        win, y=btn_y, x_start=box_x + 2, total_width=total_width,
+        base_attr=get_attr(PAIR_DIALOG),
+    )
+    win.refresh()
+
+
 class ConfirmModal(Modal):
     """Y/N confirmation dialog backed by the shared Modal shell.
 
@@ -238,13 +271,9 @@ class ConfirmModal(Modal):
     def render(self, win: Any) -> None:
         # Reserve one body line for the button bar (rendered on top).
         body = [self.message, '', '']
-        box_y, box_x = draw_modal(win, self.title, body, width=self._width)
-        btn_y = box_y + 3 + len(body) - 1
-        self.button_bar.render(
-            win, y=btn_y, x_start=box_x + 2, total_width=self._width - 4,
-            base_attr=get_attr(PAIR_DIALOG),
+        _render_modal_with_buttons(
+            win, self.title, body, self._width, self.button_bar
         )
-        win.refresh()
 
     def handle_key(self, key: int) -> None:
         # Letter shortcuts (case-insensitive).
@@ -334,26 +363,25 @@ class OverwriteModal(Modal):
             focused=0,
         )
         # Width must fit the title, the filename, file info rows, and the
-        # 5-button bar. The bar needs ~9 cells per button (`[ Older ]` is
-        # the widest button text) — keep the heuristic explicit.
-        min_button_bar_width = len(self.button_bar.buttons) * 9
+        # 5-button bar (`[< label >]` is len(label) + 6 chars per button).
+        buttons = self.button_bar.buttons
+        min_button_bar_width = len(buttons) * (
+            max(len(b.label) + 6 for b in buttons) + 1
+        )
         self._width = max(
             len(self.title) + 6,
             len(filename) + 6,
             len(self.source_info) + 6,
+            len(self.dest_info) + 6,
             min_button_bar_width + 4,
             50,
         )
 
     def render(self, win: Any) -> None:
         body = [self.filename, '', self.source_info, self.dest_info, '']
-        box_y, box_x = draw_modal(win, self.title, body, width=self._width)
-        btn_y = box_y + 3 + len(body) - 1
-        self.button_bar.render(
-            win, y=btn_y, x_start=box_x + 2, total_width=self._width - 4,
-            base_attr=get_attr(PAIR_DIALOG),
+        _render_modal_with_buttons(
+            win, self.title, body, self._width, self.button_bar
         )
-        win.refresh()
 
     def handle_key(self, key: int) -> None:
         if key == 27:  # Escape
@@ -548,10 +576,11 @@ class ErrorModal(Modal):
         super().__init__()
         self.title = title
 
-        lines = [message, '']
+        lines = (message.splitlines() or ['']) + ['']
         if details:
             for error in details[:max_details]:
-                lines.append(f'  {error}')
+                for sub_line in (error.splitlines() or ['']):
+                    lines.append(f'  {sub_line}')
             remaining = len(details) - max_details
             if remaining > 0:
                 lines.append(f'  ...and {remaining} more error(s)')
@@ -568,13 +597,9 @@ class ErrorModal(Modal):
 
     def render(self, win: Any) -> None:
         body = self._body + ['']  # last line reserved for button bar
-        box_y, box_x = draw_modal(win, self.title, body, width=self._width)
-        btn_y = box_y + 3 + len(body) - 1
-        self.button_bar.render(
-            win, y=btn_y, x_start=box_x + 2, total_width=self._width - 4,
-            base_attr=get_attr(PAIR_DIALOG),
+        _render_modal_with_buttons(
+            win, self.title, body, self._width, self.button_bar
         )
-        win.refresh()
 
     def handle_key(self, key: int) -> None:
         # Any key dismisses — back-compat with the previous "press any key"
@@ -794,26 +819,28 @@ class SelectionDialog(Modal):
         Returns:
             Tuple of (width, height).
         """
-        # Calculate number of items
-        num_items = len(self.options)
-        if self.allow_custom:
-            num_items += 1
-
-        # Width: max of title or longest option, plus numbering and padding
-        max_option_len = max(len(opt) for opt in self.options) if self.options else 0
+        num_items = len(self.options) + (1 if self.allow_custom else 0)
+        max_option_len = max((len(opt) for opt in self.options), default=0)
         if self.allow_custom:
             max_option_len = max(max_option_len, len('Custom...'))
 
-        content_width = max(len(self.title), max_option_len + 4)  # +4 for "N. "
-        width = max(content_width + 6, self.MIN_WIDTH)
+        sel_hint = f'1-{num_items}, arrows + Enter, or click  [Esc] to cancel'
+        custom_prompt = 'Enter custom command:'
+        custom_hint = '[Enter] to confirm, [Esc] to cancel'
+        num_prefix_len = max(4, len(str(num_items)) + 3)
 
-        # Height: border + blank + options + blank + hint + border
-        # In custom mode: border + blank + prompt + input + blank + hint + border = 7
         if self.in_custom_input_mode:
-            height = 7
+            content_width = max(
+                len(self.title), len(custom_prompt) + 2, len(custom_hint)
+            )
+            height = 8
         else:
-            height = num_items + 5  # borders(2) + blank(1) + hint(1) + blank(1)
+            content_width = max(
+                len(self.title), max_option_len + num_prefix_len, len(sel_hint)
+            )
+            height = num_items + 6
 
+        width = max(content_width + 6, self.MIN_WIDTH)
         return width, height
 
     def _total_focusable(self) -> int:
@@ -956,10 +983,11 @@ class SelectionDialog(Modal):
         """
         rows, cols = stdscr.getmaxyx()
         width, height = self.get_dimensions()
+        width = _clamp_modal_width(width, cols)
 
-        # Calculate centered position
-        start_y = (rows - height) // 2
-        start_x = (cols - width) // 2
+        # Calculate centered position clamped to screen bounds
+        start_y = max(0, (rows - height) // 2)
+        start_x = max(0, (cols - width) // 2)
 
         dialog_attr = get_attr(PAIR_DIALOG)
         title_attr = get_attr(PAIR_DIALOG_TITLE)
@@ -982,6 +1010,8 @@ class SelectionDialog(Modal):
         """Render the selection list mode."""
         frame = _render_dialog_frame(width, self.title)
         self.option_positions.clear()
+        inner_text = max(width - 2, 0)
+        text_limit = max(inner_text - 1, 0)
 
         # Top border
         safe_addstr(stdscr, start_y, start_x, frame['top'], dialog_attr)
@@ -998,7 +1028,7 @@ class SelectionDialog(Modal):
         # arrow navigation has a visible cursor (issue #16).
         line_y = start_y + 3
         for i, opt in enumerate(self.options, 1):
-            content = f'│  {i}. {opt}'.ljust(width - 1) + '│'
+            content = '│' + f'  {i}. {opt}'[:text_limit].ljust(inner_text) + '│'
             attr = dialog_attr | (curses.A_REVERSE if self.focused == i - 1 else 0)
             safe_addstr(stdscr, line_y, start_x, content, attr)
             self.option_positions.append(
@@ -1009,7 +1039,7 @@ class SelectionDialog(Modal):
         # Custom option
         if self.allow_custom:
             num = len(self.options) + 1
-            content = f'│  {num}. Custom...'.ljust(width - 1) + '│'
+            content = '│' + f'  {num}. Custom...'[:text_limit].ljust(inner_text) + '│'
             attr = dialog_attr | (
                 curses.A_REVERSE if self.focused == len(self.options) else 0
             )
@@ -1046,6 +1076,8 @@ class SelectionDialog(Modal):
     ) -> None:
         """Render the custom text input mode."""
         frame = _render_dialog_frame(width, self.title)
+        inner_text = max(width - 2, 0)
+        text_limit = max(inner_text - 1, 0)
 
         # Top border
         safe_addstr(stdscr, start_y, start_x, frame['top'], dialog_attr)
@@ -1059,12 +1091,18 @@ class SelectionDialog(Modal):
         safe_addstr(stdscr, start_y + 2, start_x, frame['separator'], dialog_attr)
 
         # Prompt line
-        prompt = '│  Enter custom command:'.ljust(width - 1) + '│'
+        prompt = '│' + '  Enter custom command:'[:text_limit].ljust(inner_text) + '│'
         safe_addstr(stdscr, start_y + 3, start_x, prompt, dialog_attr)
 
-        # Input line with cursor
-        input_display = f'> {self.custom_text}_'
-        input_content = f'│  {input_display}'.ljust(width - 1) + '│'
+        # Input line with cursor (horizontally scroll when text exceeds width)
+        max_text_len = max(width - 8, 1)
+        visible_text = (
+            self.custom_text[-max_text_len:]
+            if len(self.custom_text) > max_text_len
+            else self.custom_text
+        )
+        input_display = f'> {visible_text}_'
+        input_content = '│' + f'  {input_display}'[:text_limit].ljust(inner_text) + '│'
         safe_addstr(stdscr, start_y + 4, start_x, input_content, dialog_attr)
 
         # Empty line
@@ -1356,6 +1394,26 @@ class ChmodDialog(Modal):
 
         return mode
 
+    def get_mode_masks(self) -> tuple[int, int]:
+        """Compute bitmasks of explicitly checked and unchecked permission bits.
+
+        Returns:
+            Tuple of ``(set_mask, clear_mask)`` where ``TriState.CHECKED`` bits
+            are set in ``set_mask``, ``TriState.UNCHECKED`` bits are set in
+            ``clear_mask``, and ``TriState.MIXED`` bits appear in neither.
+        """
+        from tnc.permissions import TriState, _PERMISSION_BITS
+
+        set_mask = 0
+        clear_mask = 0
+        for bit_name, bit_mask in _PERMISSION_BITS.items():
+            state = self.get_bit_state(bit_name)
+            if state == TriState.CHECKED:
+                set_mask |= bit_mask
+            elif state == TriState.UNCHECKED:
+                clear_mask |= bit_mask
+        return (set_mask, clear_mask)
+
     def get_octal_preview(self) -> str:
         """Get octal string for current mode."""
         from tnc.permissions import mode_to_octal_string
@@ -1370,7 +1428,7 @@ class ChmodDialog(Modal):
         width = 60
         height = 14  # Base height
         if self.has_directory:
-            height += 1  # Recursive checkbox
+            height += 2  # Empty separator + recursive checkbox
         return width, height
 
     def render(self, win: Any) -> None:
@@ -1384,8 +1442,8 @@ class ChmodDialog(Modal):
         rows, cols = win.getmaxyx()
         width, height = self.get_dimensions()
 
-        start_y = (rows - height) // 2
-        start_x = (cols - width) // 2
+        start_y = max(0, (rows - height) // 2)
+        start_x = max(0, (cols - width) // 2)
 
         dialog_attr = get_attr(PAIR_DIALOG)
         title_attr = get_attr(PAIR_DIALOG_TITLE)
@@ -1424,10 +1482,9 @@ class ChmodDialog(Modal):
         #   [2-space pad][label 6][col0 9-char chunk][col1 9-char chunk][col2]
         # where each col chunk is "  <5-char-checkbox>  ". The line itself is
         # prefixed by '│ ' (2 chars) inside the start_x offset (see _draw_line).
-        # So col_idx N's checkbox visible region starts at:
-        #   start_x + 2 (border) + 2 (pad) + 6 (label) + N*9 + 2 (chunk pad) + 1 (>/space)
-        # = start_x + 13 + N*9. The clickable bracketed checkbox is 5 chars
-        # ('>[x]<' or ' [x] ').
+        # So col_idx N's 5-char checkbox span ('>[x]<' or ' [x] ') starts at:
+        #   start_x + 2 (border) + 2 (pad) + 6 (label) + N*9 + 2 (chunk pad)
+        # = start_x + 12 + N*9.
         row_labels = ['Owner', 'Group', 'Other']
         for row_idx, label in enumerate(row_labels):
             row_text = f'  {label:6}'
@@ -1447,7 +1504,7 @@ class ChmodDialog(Modal):
                 row_text += f'  {checkbox}  '
 
                 # Record click hit region (the visible 5-char checkbox span).
-                cb_x = start_x + 13 + col_idx * 9
+                cb_x = start_x + 12 + col_idx * 9
                 self._click_targets.append(
                     (cb_x, cb_x + 5, line_y, f'grid:{row_idx}:{col_idx}')
                 )
@@ -1460,11 +1517,12 @@ class ChmodDialog(Modal):
         line_y += 1
 
         # Special bits row. Layout:
-        #   '  Special:' (10 chars) then per-column 14 chars:
-        #       focused:    '  >[x]< Set UID' (15-char-ish; actually 2 pad + 5 cb + 1 sp + 7 label = 15)
+        #   '  Special:' (10 chars) then per-column 15 chars:
+        #       focused:    '  >[x]< Set UID' (2 pad + 5 cb + 1 sp + 7 label = 15)
         #       unfocused:  '   [x]  Set UID' (3 pad + 3 cb + 2 pad + 7 label = 15)
-        # We track checkbox span = 5 chars (the bracketed cell).
-        # column_x = start_x + 2 (border) + 10 (label) + col_idx * 15 + 2 (pad)
+        # Prefix '│ ' adds 2 chars, so the 5-char checkbox span starts at:
+        #   start_x + 2 (border) + 10 (label) + col_idx * 15 + 2 (pad)
+        # = start_x + 14 + col_idx * 15.
         special_text = '  Special:'
         special_labels = ['Set UID', 'Set GID', 'Sticky']
         for col_idx, (bit_name, label) in enumerate(zip(_SPECIAL_BITS, special_labels)):
@@ -1476,7 +1534,7 @@ class ChmodDialog(Modal):
             else:
                 special_text += f'   {checkbox}  {label}'
 
-            cb_x = start_x + 12 + col_idx * 15
+            cb_x = start_x + 14 + col_idx * 15
             self._click_targets.append(
                 (cb_x, cb_x + 5, line_y, f'special:{col_idx}')
             )
@@ -1546,7 +1604,7 @@ class ChmodDialog(Modal):
 
     def _draw_line(self, win: Any, y: int, x: int, width: int, content: str, attr: int) -> None:
         """Draw a line with borders."""
-        line = '│ ' + content.ljust(width - 4) + ' │'
+        line = _format_bordered_line(content, width)
         try:
             win.addstr(y, x, line, attr)
         except curses.error:
@@ -1815,28 +1873,49 @@ class ChownDialog(Modal):
         return (self.owner_input, self.group_input)
 
     def get_dimensions(self) -> tuple[int, int]:
-        """Calculate dialog dimensions."""
-        width = 60
-        height = 12
-        # Add height for autocomplete dropdown
-        suggestions = self.get_autocomplete_suggestions()
-        if suggestions:
-            height += min(len(suggestions), 5) + 1
-        return width, height
+        """Calculate dialog dimensions (fixed height with 5 suggestion rows)."""
+        return 60, 16
+
+    def _draw_autocomplete_window(
+        self,
+        win: Any,
+        line_y: int,
+        start_x: int,
+        width: int,
+        suggestions: list[str],
+        attr: int,
+    ) -> int:
+        """Render a fixed 5-row scrolling window of autocomplete suggestions."""
+        window_start = max(0, self.autocomplete_index - 4)
+        visible = suggestions[window_start:window_start + 5]
+        for i in range(5):
+            if i < len(visible):
+                prefix = '> ' if window_start + i == self.autocomplete_index else '  '
+                self._draw_line(win, line_y, start_x, width, f'         {prefix}{visible[i]}', attr)
+            else:
+                self._draw_line(win, line_y, start_x, width, '', attr)
+            line_y += 1
+        return line_y
 
     def render(self, win: Any) -> None:
         """Render the dialog."""
         rows, cols = win.getmaxyx()
         width, height = self.get_dimensions()
 
-        start_y = (rows - height) // 2
-        start_x = (cols - width) // 2
+        start_y = max(0, (rows - height) // 2)
+        start_x = max(0, (cols - width) // 2)
 
         dialog_attr = get_attr(PAIR_DIALOG)
         title_attr = get_attr(PAIR_DIALOG_TITLE)
 
         # Reset click hit-regions; rebuild as we render.
         self._click_targets.clear()
+
+        suggestions = (
+            self.get_autocomplete_suggestions()
+            if self.active_field in ('owner', 'group')
+            else []
+        )
 
         # Draw border and title
         title = 'Change Ownership'
@@ -1873,13 +1952,11 @@ class ChownDialog(Modal):
         )
         line_y += 1
 
-        # Autocomplete for owner
+        # Autocomplete for owner (5 reserved rows)
         if self.active_field == 'owner':
-            suggestions = self.get_autocomplete_suggestions()[:5]
-            for i, suggestion in enumerate(suggestions):
-                prefix = '> ' if i == self.autocomplete_index else '  '
-                self._draw_line(win, line_y, start_x, width, f'         {prefix}{suggestion}', dialog_attr)
-                line_y += 1
+            line_y = self._draw_autocomplete_window(
+                win, line_y, start_x, width, suggestions, dialog_attr
+            )
 
         # Empty line
         self._draw_line(win, line_y, start_x, width, '', dialog_attr)
@@ -1895,13 +1972,11 @@ class ChownDialog(Modal):
         )
         line_y += 1
 
-        # Autocomplete for group
-        if self.active_field == 'group':
-            suggestions = self.get_autocomplete_suggestions()[:5]
-            for i, suggestion in enumerate(suggestions):
-                prefix = '> ' if i == self.autocomplete_index else '  '
-                self._draw_line(win, line_y, start_x, width, f'         {prefix}{suggestion}', dialog_attr)
-                line_y += 1
+        # Autocomplete for group (or 5 reserved blank rows when on buttons)
+        if self.active_field != 'owner':
+            line_y = self._draw_autocomplete_window(
+                win, line_y, start_x, width, suggestions, dialog_attr
+            )
 
         # Empty line
         self._draw_line(win, line_y, start_x, width, '', dialog_attr)
@@ -1942,7 +2017,7 @@ class ChownDialog(Modal):
 
     def _draw_line(self, win: Any, y: int, x: int, width: int, content: str, attr: int) -> None:
         """Draw a line with borders."""
-        line = '│ ' + content.ljust(width - 4) + ' │'
+        line = _format_bordered_line(content, width)
         try:
             win.addstr(y, x, line, attr)
         except curses.error:
@@ -2144,8 +2219,7 @@ class InputDialog(Modal):
         content_width = max(len(self.title), len(self.prompt), len(self.text) + 4)
         width = max(content_width + 6, self.MIN_WIDTH)
         # Clamp to terminal width
-        if width > cols - 2:
-            width = max(cols - 2, 20)
+        width = _clamp_modal_width(width, cols)
 
         inner = width - 2
         # Max visible text length (account for "> " prefix and borders)
@@ -2205,6 +2279,9 @@ class InputDialog(Modal):
         # Footer separator
         footer_y = y + 4 + len(lines)
         safe_addstr(stdscr, footer_y, x, frame['separator'], dialog_attr)
+
+        # Draw side borders on button row before rendering buttons on top.
+        safe_addstr(stdscr, footer_y + 1, x, frame['empty'], dialog_attr)
 
         # OK / Cancel button bar (replaces the old "[Enter] OK [Esc] Cancel"
         # static hint). Issue #16: clickable + arrow-focusable buttons.
@@ -2334,6 +2411,9 @@ class HelpModal(Modal):
             for _, items in HELP_CONTENT for key, desc in items
         )
         self._width = max(longest + 4, len(self.title) + 6, 50)
+        self._scroll_offset = 0
+        self._max_scroll = 0
+        self._page_size = 1
         self.button_bar = ButtonBar(
             buttons=[Button(label='OK', shortcut='', value=None)],
             focused=0,
@@ -2351,17 +2431,47 @@ class HelpModal(Modal):
         return lines
 
     def render(self, win: Any) -> None:
-        body = self._build_body()
-        box_y, box_x = draw_modal(win, self.title, body, width=self._width)
-        btn_y = box_y + 3 + len(body) - 1
-        self.button_bar.render(
-            win, y=btn_y, x_start=box_x + 2, total_width=self._width - 4,
-            base_attr=get_attr(PAIR_DIALOG),
+        rows, _cols = win.getmaxyx()
+        content = self._build_body()[:-1]
+        max_modal_height = max(rows - 2, 7)
+        max_body_len = max_modal_height - 4
+
+        if len(content) + 1 <= max_body_len:
+            self._max_scroll = 0
+            self._scroll_offset = 0
+            self._page_size = len(content)
+            body = content + ['']
+        else:
+            visible_rows = max(max_body_len - 2, 1)
+            self._page_size = visible_rows
+            self._max_scroll = max(0, len(content) - visible_rows)
+            self._scroll_offset = max(0, min(self._scroll_offset, self._max_scroll))
+            visible = content[self._scroll_offset:self._scroll_offset + visible_rows]
+            end_row = self._scroll_offset + len(visible)
+            hint = (
+                f'Up/Down/PgUp/PgDn to scroll '
+                f'({self._scroll_offset + 1}-{end_row}/{len(content)})'
+            )
+            body = visible + [hint, '']
+
+        _render_modal_with_buttons(
+            win, self.title, body, self._width, self.button_bar
         )
-        win.refresh()
 
     def handle_key(self, key: int) -> None:
-        # Any key dismisses (Esc, Enter, OK shortcut, etc.).
+        page = max(self._page_size, 1)
+        scroll_targets = {
+            curses.KEY_UP: self._scroll_offset - 1,
+            curses.KEY_DOWN: self._scroll_offset + 1,
+            curses.KEY_PPAGE: self._scroll_offset - page,
+            curses.KEY_NPAGE: self._scroll_offset + page,
+            curses.KEY_HOME: 0,
+            curses.KEY_END: self._max_scroll,
+        }
+        if key in scroll_targets:
+            self._scroll_offset = max(0, min(scroll_targets[key], self._max_scroll))
+            return
+        # Any other key dismisses (Esc, Enter, OK shortcut, etc.).
         # Matches ErrorModal / SummaryModal back-compat semantics.
         self.set_result(None)
 
