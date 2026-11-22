@@ -679,6 +679,7 @@ class TestE2ECommandLineAndChrome(_E2ETestBase):
 
             # Clear command line and test F1 help modal chrome
             driver.press_esc_settled()
+            driver.wait_for_text('[Esc] again to clear', row=21)
             driver.press_esc_settled()
             driver.wait_until(lambda s: 'zzzzzz' not in s.row_text(22))
 
