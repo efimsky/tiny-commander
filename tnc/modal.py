@@ -15,7 +15,8 @@ each button was last rendered so click hit-testing is a list lookup.
 from __future__ import annotations
 
 import curses
-from typing import Any, NamedTuple
+import inspect
+from typing import Any, Callable, NamedTuple
 
 from tnc.utils import safe_addstr
 
@@ -83,25 +84,39 @@ class ButtonBar:
         if not self.buttons:
             return
 
+        # Both variants are the same width: 6 surrounding chars plus the label,
+        # so focus changes don't shift the bar layout.
+        rendered_texts = [
+            f'[< {btn.label} >]' if i == self.focused else f'[  {btn.label}  ]'
+            for i, btn in enumerate(self.buttons)
+        ]
+        # Cumulative remaining width lets us shift left only when needed to fit
+        # all buttons without overlapping, preserving centered layout otherwise.
+        suffix_widths = [0] * len(rendered_texts)
+        running = 0
+        for i in range(len(rendered_texts) - 1, -1, -1):
+            running += len(rendered_texts[i])
+            suffix_widths[i] = running
+
         slot_width = max(total_width // len(self.buttons), 1)
-        for i, btn in enumerate(self.buttons):
+        prev_end = x_start
+        bar_end = x_start + max(total_width, 0)
+        for i, (btn, text) in enumerate(zip(self.buttons, rendered_texts)):
             slot_x = x_start + i * slot_width
-            is_focused = i == self.focused
-            # Both variants are the same width: 7 surrounding chars plus
-            # the label, so focus changes don't shift the bar layout.
-            if is_focused:
-                text = f'[< {btn.label} >]'
-            else:
-                text = f'[  {btn.label}  ]'
             offset = max(0, (slot_width - len(text)) // 2)
-            text_x = slot_x + offset
-            attr = base_attr | curses.A_REVERSE if is_focused else base_attr
-            safe_addstr(win, y, text_x, text, attr)
+            max_start = bar_end - suffix_widths[i]
+            text_x = max(prev_end, min(slot_x + offset, max_start))
+            avail = bar_end - text_x
+            if avail <= 0:
+                continue
+            visible = text[:avail]
+            attr = base_attr | curses.A_REVERSE if i == self.focused else base_attr
+            safe_addstr(win, y, text_x, visible, attr)
 
             # Record click region as the visible bracket span.
-            self.button_positions.append(
-                (text_x, text_x + len(text), y, btn.value)
-            )
+            end_x = text_x + len(visible)
+            self.button_positions.append((text_x, end_x, y, btn.value))
+            prev_end = end_x
 
     def hit_test(self, x: int, y: int) -> Any | None:
         """Return the value of the button at (x, y), or None if outside.
@@ -159,6 +174,8 @@ class Modal:
     that should be returned from :meth:`show`.
     """
 
+    button_translator: Callable[[int], int] | None = None
+
     def __init__(self) -> None:
         self._done = False
         self._result: Any = _UNSET
@@ -173,12 +190,27 @@ class Modal:
         while not self._done:
             self.render(win)
             key = win.getch()
+            if key == -1:
+                continue
+            if key == curses.KEY_RESIZE:
+                try:
+                    win.erase()
+                except curses.error:
+                    pass
+                continue
             if key == curses.KEY_MOUSE:
                 try:
                     _, x, y, _, button_state = curses.getmouse()
                 except curses.error:
                     # Lost-mouse-event — drop and continue rather than crash.
                     continue
+                translator = inspect.getattr_static(self, 'button_translator', None)
+                if isinstance(translator, staticmethod):
+                    translator = translator.__func__
+                elif isinstance(translator, property):
+                    translator = self.button_translator
+                if translator is not None:
+                    button_state = translator(button_state)
                 self.handle_click(x, y, button_state)
             else:
                 self.handle_key(key)
