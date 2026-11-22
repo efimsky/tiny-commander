@@ -126,6 +126,9 @@ class FunctionBar:
         self.render_y = y
         self.button_positions.clear()
 
+        if width <= 0:
+            return
+
         labels = self.get_labels()
         fkey_attr = get_attr(PAIR_FKEY)
         label_attr = get_attr(PAIR_FKEY_LABEL)
@@ -149,6 +152,8 @@ class FunctionBar:
 
         # Calculate cell width for even distribution
         cell_width = width // len(buttons)
+        if cell_width == 0:
+            return
 
         for i, (key, action) in enumerate(buttons):
             label = labels.get(key, '')
@@ -161,7 +166,9 @@ class FunctionBar:
                 break
 
             # Track button position for mouse clicks
-            end_x = start_x + cell_width
+            end_x = min(width, start_x + cell_width)
+            if end_x <= start_x:
+                break
             self.button_positions.append((start_x, end_x, action))
 
             key_text = f' {key}'
@@ -189,15 +196,25 @@ class FunctionBar:
             else:
                 text_start = start_x + max(0, (cell_width - text_len) // 2)
 
+            # Clip key and label to the cell boundary so no button bleeds
+            # into the next button's cell (#112).
+            avail_key = max(0, end_x - text_start)
+            key_text = key_text[:avail_key]
+            avail_label = max(0, end_x - (text_start + len(key_text)))
+            label_text = label_text[:avail_label]
+
             # Check if this button should be highlighted (visual feedback)
             if self.highlight_button == key:
                 # Invert colors for feedback
-                safe_addstr(win, y, text_start, key_text, label_attr)
-                safe_addstr(win, y, text_start + len(key_text), label_text, fkey_attr)
+                k_attr, l_attr = label_attr, fkey_attr
             else:
                 # Normal rendering: F-key number (white on black), label (black on cyan)
-                safe_addstr(win, y, text_start, key_text, fkey_attr)
-                safe_addstr(win, y, text_start + len(key_text), label_text, label_attr)
+                k_attr, l_attr = fkey_attr, label_attr
+
+            if key_text:
+                safe_addstr(win, y, text_start, key_text, k_attr)
+            if label_text:
+                safe_addstr(win, y, text_start + len(key_text), label_text, l_attr)
 
     def contains_point(self, x: int, y: int) -> bool:
         """Check if a point is within the function bar.

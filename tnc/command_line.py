@@ -79,15 +79,23 @@ class CommandLine:
             text = ' ' + text
         self._insert_text(text)
 
-    def get_display_text(self, width: int) -> str:
-        """Get the display text for rendering.
+    def _compute_display(self, width: int) -> tuple[str, int]:
+        """Compute display text and cursor screen x-position for width.
+
+        Truncates the directory prompt from the left when space is tight, and
+        collapses the prompt to '> ' with horizontal scrolling around the
+        cursor when the combined prompt and input exceed width.
 
         Args:
             width: Available width for the command line.
 
         Returns:
-            The formatted display text.
+            Tuple of (display_text, cursor_screen_x).
         """
+        if width <= 1:
+            return ('', 0)
+
+        cursor_pos = max(0, min(self.cursor_pos, len(self.input_text)))
         prompt = f'{self.path}> '
         max_prompt_len = width - len(self.input_text) - 1
 
@@ -99,7 +107,29 @@ class CommandLine:
             else:
                 prompt = '> '
 
-        return prompt + self.input_text
+        if len(prompt) + len(self.input_text) >= width:
+            prompt = '> '
+            max_input_width = max(1, width - len(prompt) - 1)
+            visible_start = max(0, cursor_pos - max_input_width)
+            visible_input = self.input_text[visible_start:visible_start + max_input_width]
+            display_text = prompt + visible_input
+            cursor_screen_x = min(width - 1, len(prompt) + (cursor_pos - visible_start))
+            return (display_text, cursor_screen_x)
+
+        display_text = prompt + self.input_text
+        cursor_screen_x = min(width - 1, len(prompt) + cursor_pos)
+        return (display_text, cursor_screen_x)
+
+    def get_display_text(self, width: int) -> str:
+        """Get the display text for rendering.
+
+        Args:
+            width: Available width for the command line.
+
+        Returns:
+            The formatted display text.
+        """
+        return self._compute_display(width)[0]
 
     def get_cursor_screen_pos(self, width: int) -> int:
         """Get cursor position on screen.
@@ -110,9 +140,7 @@ class CommandLine:
         Returns:
             Screen position of cursor.
         """
-        display = self.get_display_text(width)
-        prompt_len = len(display) - len(self.input_text)
-        return prompt_len + self.cursor_pos
+        return self._compute_display(width)[1]
 
     def handle_char(self, char: str) -> None:
         """Handle a character input.
@@ -198,17 +226,21 @@ class CommandLine:
         Returns:
             The x position where the cursor should be placed.
         """
-        display = self.get_display_text(width)
+        display, cursor_x = self._compute_display(width)
+        if width <= 0:
+            return 0
+
         cmdline_attr = get_attr(PAIR_CMDLINE)
 
         # Clear the line with the command line background color
         safe_addstr(win, y, 0, ' ' * width, cmdline_attr)
 
         # Render the command line text
-        safe_addstr(win, y, 0, display[:width - 1], cmdline_attr)
+        if width > 1 and display:
+            safe_addstr(win, y, 0, display[:width - 1], cmdline_attr)
 
         # Return cursor position for the caller to set
-        return self.get_cursor_screen_pos(width)
+        return cursor_x
 
     def execute(self, command: str) -> CommandResult | None:
         """Execute a shell command.
