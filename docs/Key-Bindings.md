@@ -22,7 +22,7 @@ Tiny Commander uses Midnight Commander-style keybindings.
 | `F3` | View file with pager |
 | `F4` | Edit file with editor |
 | `F5` | Copy selected files to other panel |
-| `F6` | Move selected files to other panel |
+| `F6` | Rename or move selected file(s) |
 | `F7` | Create new directory |
 | `F8` | Delete selected files (with confirmation) |
 

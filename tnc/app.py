@@ -32,6 +32,7 @@ from tnc.file_ops import (
     RenameResult,
     copy_files_with_overwrite,
     move_files_with_overwrite,
+    move_single_entry,
     rename_file,
 )
 from tnc.function_bar import FunctionBar
@@ -800,15 +801,132 @@ class App:
             summary_kwarg='copied',
         )
 
-    def do_move(self) -> MoveResult:
-        """Move selected files from active panel to other panel.
+    @staticmethod
+    def _resolve_single_move_dest(
+        source_dir: Path, source_name: str, raw_dest: str
+    ) -> Path | None:
+        """Resolve raw user input from the F6 RenMov dialog into a target Path."""
+        entered = raw_dest.strip()
+        if not entered:
+            return None
+        if '\0' in entered:
+            raise ValueError('Invalid destination path')
+        if (
+            entered.endswith('/')
+            or entered in ('.', '..')
+            or entered.endswith(('/.', '/..'))
+        ):
+            return (source_dir / entered).resolve() / source_name
+        candidate = source_dir / entered
+        if not candidate.name:
+            raise ValueError('Invalid destination path')
+        return candidate.parent.resolve() / candidate.name
 
-        Shows confirmation dialog before moving, handles overwrites with
-        a modal dialog, and displays a summary after completion.
+    def _do_single_rename_or_move(self, source_name: str) -> MoveResult:
+        """Prompt for destination path and rename/move a single entry (mc F6 RenMov)."""
+        source_panel = self.active_panel
+        dest_panel = self.get_other_panel()
+        source_dir = source_panel.path.resolve()
+        source_path = source_dir / source_name
+        default_dest = str(dest_panel.path / source_name)
+
+        raw_dest = input_dialog(
+            self.stdscr,
+            'Rename / Move',
+            f'Move "{source_name}" to:',
+            default_value=default_dest,
+        )
+
+        try:
+            dest_path = self._resolve_single_move_dest(
+                source_dir, source_name, raw_dest
+            )
+        except ValueError as err:
+            self.draw()
+            show_summary(
+                self.stdscr,
+                'move',
+                moved=0,
+                skipped=0,
+                cancelled=False,
+                errors=[str(err)],
+            )
+            return MoveResult(success=False, error=str(err), errors=[str(err)])
+
+        if dest_path is None:
+            return MoveResult(success=False, error='', cancelled=True)
+
+        if dest_path.parent == source_dir and dest_path.name == source_name:
+            return MoveResult(success=False, error='', cancelled=True)
+
+        def _confirm_overwrite(existing_dest: Path) -> bool:
+            return confirm_dialog(
+                self.stdscr,
+                'Overwrite',
+                f'"{existing_dest.name}" already exists. Overwrite?',
+                default_yes=False,
+            )
+
+        result = move_single_entry(
+            source_path, dest_path, confirm_overwrite=_confirm_overwrite
+        )
+
+        if result.cancelled and not result.errors and not result.moved_files:
+            return result
+
+        if result.success or result.moved_files:
+            source_panel.selected.clear()
+            source_panel.refresh()
+            if dest_path.parent == source_dir:
+                for i, entry in enumerate(source_panel.entries):
+                    if entry.name == dest_path.name:
+                        source_panel.cursor = i
+                        break
+                if source_panel.cursor >= len(source_panel.entries):
+                    source_panel.cursor = max(0, len(source_panel.entries) - 1)
+                source_panel._adjust_scroll()
+
+            if (
+                dest_panel.path.resolve() == source_dir
+                and source_name in dest_panel.selected
+            ):
+                dest_panel.selected.discard(source_name)
+                if dest_path.parent == source_dir:
+                    dest_panel.selected.add(dest_path.name)
+            dest_panel.refresh()
+
+        self.draw()
+        error_list = list(result.errors) if result.errors else (
+            [result.error] if result.error else None
+        )
+        show_summary(
+            self.stdscr,
+            'move',
+            moved=len(result.moved_files),
+            skipped=len(result.skipped_files),
+            cancelled=result.cancelled,
+            errors=error_list,
+        )
+        return result
+
+    def do_move(self) -> MoveResult:
+        """Rename or move selected files from active panel (F6 RenMov).
+
+        For a single entry, prompts with an editable destination pre-filled
+        with <other_panel.path>/<source_name> (supporting in-place rename,
+        move, or move+rename). For multiple selected files, prompts for
+        confirmation and moves to the other panel directory.
 
         Returns:
             MoveResult with success status.
         """
+        files_to_operate = self.active_panel.get_files_for_operation()
+        if not files_to_operate:
+            return MoveResult(success=False, error='Nothing to move')
+
+        if len(files_to_operate) == 1:
+            return self._do_single_rename_or_move(files_to_operate[0])
+
         return self._do_file_operation(
             operation_name='Move',
             operation_func=move_files_with_overwrite,

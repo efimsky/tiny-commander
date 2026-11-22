@@ -2370,7 +2370,7 @@ HELP_CONTENT = (
         ('F4', 'Edit'),
         ('Shift+F4', 'Create new file'),
         ('F5', 'Copy to other panel'),
-        ('F6', 'Move to other panel'),
+        ('F6', 'Rename / Move'),
         ('F7', 'Make directory'),
         ('F8', 'Delete (with confirmation)'),
     )),

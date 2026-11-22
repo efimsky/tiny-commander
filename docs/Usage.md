@@ -46,9 +46,10 @@ The destination for copy/move is always the other panel.
 3. Press F5
 4. Confirm the operation
 
-### Move (F6)
+### Rename / Move (F6)
 
-Same as copy, but files are moved instead of copied.
+- **Single file/directory:** Press `F6` to open an editable destination path pre-filled with `<other_panel>/<name>`. Edit the filename to rename in place, change the directory to move, or edit both to move and rename in one step.
+- **Multiple selected files:** Same as copy, moving all selected items to the other panel.
 
 ### Delete (F8)
 
