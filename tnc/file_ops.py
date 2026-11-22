@@ -724,11 +724,10 @@ def create_file(parent_dir: str | Path, name: str) -> CreateFileResult:
     parent_dir = Path(parent_dir).resolve()
     new_file = parent_dir / name
 
-    # Check if already exists (including broken symlinks)
-    if new_file.exists() or new_file.is_symlink():
-        return CreateFileResult(success=False, error='File already exists')
-
     try:
+        # Check if already exists (including broken symlinks)
+        if new_file.exists() or new_file.is_symlink():
+            return CreateFileResult(success=False, error='File already exists')
         new_file.touch()
         return CreateFileResult(success=True, created_name=name)
     except PermissionError:

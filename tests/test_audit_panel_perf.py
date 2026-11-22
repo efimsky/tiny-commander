@@ -244,7 +244,11 @@ class TestSyscallPerformance(unittest.TestCase):
             self.assertEqual(len(entries), 8)  # '..' + 2 dirs + 5 files
             self.assertEqual(mock_resolve.call_count, 0)
             self.assertEqual(mock_lstat.call_count, 7)  # 1 per non-'..' entry
-            self.assertEqual(mock_stat.call_count, 1)   # Only for '..' parent mtime
+            follow_stat_calls = [
+                c for c in mock_stat.call_args_list
+                if c.kwargs.get('follow_symlinks', True)
+            ]
+            self.assertEqual(len(follow_stat_calls), 1)   # Only for '..' parent mtime
 
     def test_get_display_entries_symlink_calls_stat_once_per_link(self):
         """Valid and broken symlinks should each call stat() only once, not twice."""
@@ -263,7 +267,8 @@ class TestSyscallPerformance(unittest.TestCase):
             orig_stat = Path.stat
 
             def tracking_stat(self_path, *args, **kwargs):
-                stat_targets.append(self_path.name)
+                if kwargs.get('follow_symlinks', True):
+                    stat_targets.append(self_path.name)
                 return orig_stat(self_path, *args, **kwargs)
 
             with mock.patch.object(Path, 'stat', autospec=True, side_effect=tracking_stat):
@@ -335,8 +340,12 @@ class TestSyscallPerformance(unittest.TestCase):
                      mock.patch.object(Path, 'resolve', autospec=True, side_effect=orig_resolve) as mock_resolve:
                     status_bar.render(win, 22, 80, panel)
 
+                follow_stat_calls = [
+                    c for c in mock_stat.call_args_list
+                    if c.kwargs.get('follow_symlinks', True)
+                ]
                 self.assertEqual(mock_lstat.call_count, 1)
-                self.assertEqual(mock_stat.call_count, 0)
+                self.assertEqual(len(follow_stat_calls), 0)
                 self.assertEqual(mock_resolve.call_count, 0)
 
 

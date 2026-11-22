@@ -996,7 +996,9 @@ class TestEdgeCasesAndErrorsE2E(_FileOpsE2ECase):
                 self._move_cursor_to(term, '..', panel='left')
                 term.press('enter')
                 term.wait_until(
-                    lambda scr: f'/{work.name}' in scr.region(1, 0, 1, scr.cols // 2)[0],
+                    lambda scr: '/src' not in scr.region(1, 0, 1, scr.cols // 2)[0]
+                    and self._panel_contains(term, 'left', 'locked_dir/'),
+                    description='left panel returned to work dir with locked_dir visible',
                 )
                 self._move_cursor_to(term, 'locked_dir', panel='left')
                 term.press('enter')

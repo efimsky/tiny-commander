@@ -75,7 +75,12 @@ class TestModalsKeyboardMouseAndResize(unittest.TestCase):
             term.wait_ready()
 
             term.press('f1')
-            term.wait_for_text('Keyboard Shortcuts')
+            term.wait_until(
+                lambda s: s.contains('Keyboard Shortcuts')
+                and s.contains('Up/Down/PgUp/PgDn to scroll (1-')
+                and s.contains('< OK >'),
+                description='HelpModal fully rendered',
+            )
             self.assertIn('Navigation', term.screen.text())
             self.assertIn('Up/Down/PgUp/PgDn to scroll (1-', term.screen.text())
 
@@ -101,7 +106,10 @@ class TestModalsKeyboardMouseAndResize(unittest.TestCase):
 
             # Re-open and dismiss via Enter
             term.press('f1')
-            term.wait_for_text('Keyboard Shortcuts')
+            term.wait_until(
+                lambda s: s.contains('Keyboard Shortcuts') and s.contains('< OK >'),
+                description='HelpModal re-opened',
+            )
             term.press('enter')
             term.wait_until(
                 lambda s: not s.contains('Keyboard Shortcuts'),
@@ -110,7 +118,10 @@ class TestModalsKeyboardMouseAndResize(unittest.TestCase):
 
             # Re-open via F1 function-bar click, ignore outside click, close via OK click
             term.click_text('F1', row=23, settle=True)
-            term.wait_for_text('Keyboard Shortcuts')
+            term.wait_until(
+                lambda s: s.contains('Keyboard Shortcuts') and s.contains('< OK >'),
+                description='HelpModal opened via F1 click',
+            )
             term.click(2, 2, settle=True)
             self.assertTrue(term.screen.contains('Keyboard Shortcuts'))
             term.click_text('< OK >', settle=True)

@@ -651,6 +651,7 @@ class TestE2ECommandLineAndChrome(_E2ETestBase):
             driver.wait_for_text('touch cmd_created.txt', row=22)
             driver.press('enter')
             driver.wait_for_text('[Press any key to continue]')
+            driver.wait_stable()
             driver.press('space')
             driver.wait_ready()
             driver.wait_for_text('cmd_created.txt')

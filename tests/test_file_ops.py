@@ -429,19 +429,17 @@ class TestRenameFile(unittest.TestCase):
             src.touch()
 
             # On a real case-insensitive FS, both Foo.txt and foo.txt would
-            # resolve to the same file. Simulate by patching samefile.
-            real_samefile = Path.samefile
+            # resolve to the same inode via lstat(). Simulate by patching lstat.
+            real_lstat = Path.lstat
 
-            def case_insensitive_samefile(self_path, other_path):
-                # If names differ only by case in the same parent, treat as same.
-                a = Path(self_path)
-                b = Path(other_path)
-                if a.parent == b.parent and a.name.lower() == b.name.lower():
-                    return True
-                return real_samefile(self_path, other_path)
+            def case_insensitive_lstat(self_path, *args, **kwargs):
+                p = Path(self_path)
+                if p.parent == src.parent and p.name.lower() == src.name.lower():
+                    return real_lstat(src, *args, **kwargs)
+                return real_lstat(self_path, *args, **kwargs)
 
             with mock.patch.object(Path, 'exists', return_value=True), \
-                 mock.patch.object(Path, 'samefile', case_insensitive_samefile), \
+                 mock.patch.object(Path, 'lstat', case_insensitive_lstat), \
                  mock.patch.object(Path, 'rename') as mock_rename:
                 result = rename_file(tmpdir, 'Foo.txt', 'foo.txt')
 

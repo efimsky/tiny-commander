@@ -528,11 +528,20 @@ class TerminalDriver:
                 try:
                     self._proc.wait(timeout=sigterm_timeout)
                 except subprocess.TimeoutExpired:
+                    if self._master_fd is not None:
+                        try:
+                            os.close(self._master_fd)
+                        except OSError:
+                            pass
+                        self._master_fd = None
                     try:
                         os.killpg(self._proc.pid, signal.SIGKILL)
                     except ProcessLookupError:
                         pass
-                    self._proc.wait(timeout=1.0)
+                    try:
+                        self._proc.wait(timeout=3.0)
+                    except subprocess.TimeoutExpired:
+                        pass
         finally:
             if self._master_fd is not None:
                 try:

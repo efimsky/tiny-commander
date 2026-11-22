@@ -422,12 +422,14 @@ class TestScriptedFeatureCollisionsE2E(unittest.TestCase):
                     and s.contains('hello file.txt'),
                     description='command output and Press-any-key prompt',
                 )
+                term.wait_stable()
 
                 term.press('space')
                 term.wait_until(
                     lambda s: s.in_alt_screen
                     and s.contains('[Left]')
-                    and s.find_text('F10', row=23) is not None,
+                    and s.find_text('F10', row=23) is not None
+                    and s.find_text("echo 'hello file.txt'", row=22) is None,
                     description='return from external command to panels',
                 )
 

@@ -100,6 +100,7 @@ class TestEditFileCalls(_IsolatedEditTestCase):
     @mock.patch('curses.curs_set')
     @mock.patch('curses.endwin')
     @mock.patch('tnc.app.subprocess.run')
+    @mock.patch('tnc.config.sys.platform', 'darwin')
     def test_edit_textedit_maps_to_open_e(self, mock_run, _endwin, _curs_set, _has_colors):
         """TextEdit should be mapped to 'open -e' command."""
         with tempfile.TemporaryDirectory() as tmpdir:
