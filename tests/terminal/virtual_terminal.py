@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import codecs
 from dataclasses import dataclass, replace
+from typing import Any
 import unicodedata
 
 
@@ -36,6 +37,9 @@ _DEC_SPECIAL_GRAPHICS: dict[str, str] = {
 }
 
 
+_STYLE_UNSET: Any = object()
+
+
 @dataclass(frozen=True, slots=True)
 class Style:
     """Visual attributes for a single terminal cell."""
@@ -47,6 +51,34 @@ class Style:
     italic: bool = False
     underline: bool = False
     reverse: bool = False
+
+    def matches(
+        self,
+        *,
+        fg: Any = _STYLE_UNSET,
+        bg: Any = _STYLE_UNSET,
+        bold: bool | None = None,
+        dim: bool | None = None,
+        italic: bool | None = None,
+        underline: bool | None = None,
+        reverse: bool | None = None,
+    ) -> bool:
+        """Return True if this Style matches all specified non-unset filters."""
+        if fg is not _STYLE_UNSET and self.fg != fg:
+            return False
+        if bg is not _STYLE_UNSET and self.bg != bg:
+            return False
+        if bold is not None and self.bold != bold:
+            return False
+        if dim is not None and self.dim != dim:
+            return False
+        if italic is not None and self.italic != italic:
+            return False
+        if underline is not None and self.underline != underline:
+            return False
+        if reverse is not None and self.reverse != reverse:
+            return False
+        return True
 
 
 DEFAULT_STYLE = Style()
@@ -109,12 +141,13 @@ class _ScreenState:
 
 
 def _char_width(ch: str) -> int:
-    """Return display width (0, 1, or 2 columns) for a Unicode character."""
+    """Return display width (0, 1, or 2 columns) for a Unicode character or cluster."""
     if not ch:
         return 0
-    if unicodedata.combining(ch):
+    base = ch[0]
+    if unicodedata.combining(base) or unicodedata.category(base) in ('Mn', 'Me', 'Cf'):
         return 0
-    return 2 if unicodedata.east_asian_width(ch) in ('W', 'F') else 1
+    return 2 if unicodedata.east_asian_width(base) in ('W', 'F') else 1
 
 
 class VirtualTerminal:
@@ -218,28 +251,7 @@ class VirtualTerminal:
 
     def find_all(self, needle: str, *, row: int | None = None) -> list[tuple[int, int]]:
         """Find all occurrences of ``needle`` as ``(col, row)`` pairs."""
-        if not needle:
-            return []
-        row_range = [row] if row is not None else range(self.rows)
-        matches: list[tuple[int, int]] = []
-        for r in row_range:
-            if r < 0 or r >= self.rows:
-                continue
-            chars: list[str] = []
-            col_map: list[int] = []
-            for c_idx, cell in enumerate(self._active.grid[r]):
-                if not cell.is_continuation:
-                    chars.append(cell.char)
-                    col_map.append(c_idx)
-            line = ''.join(chars)
-            start = 0
-            while True:
-                idx = line.find(needle, start)
-                if idx == -1:
-                    break
-                matches.append((col_map[idx], r))
-                start = idx + 1
-        return matches
+        return [(col, r) for col, r, _ in self._find_all_with_spans(needle, row=row)]
 
     def find_text(
         self,
@@ -257,6 +269,124 @@ class VirtualTerminal:
     def contains(self, needle: str) -> bool:
         """Return True if ``needle`` appears anywhere on screen."""
         return self.find_text(needle) is not None
+
+    def style_at(self, row: int, col: int) -> Style:
+        """Return the visual Style at (row, col)."""
+        return self.cell(row, col).style
+
+    def row_styles(self, row: int) -> list[Style]:
+        """Return visual Styles for every column in ``row``."""
+        return [c.style for c in self._active.grid[row]]
+
+    def region_styles(
+        self,
+        row: int,
+        col: int,
+        height: int,
+        width: int,
+    ) -> list[list[Style]]:
+        """Extract a rectangular 2D slice of cell Styles."""
+        out: list[list[Style]] = []
+        end_r = min(self.rows, row + height)
+        end_c = min(self.cols, col + width)
+        for r in range(max(0, row), end_r):
+            out.append([c.style for c in self._active.grid[r][max(0, col):end_c]])
+        return out
+
+    def _find_all_with_spans(
+        self,
+        needle: str,
+        *,
+        row: int | None = None,
+    ) -> list[tuple[int, int, list[int]]]:
+        if not needle:
+            return []
+        row_range = [row] if row is not None else range(self.rows)
+        matches: list[tuple[int, int, list[int]]] = []
+        for r in row_range:
+            if r < 0 or r >= self.rows:
+                continue
+            chars: list[str] = []
+            col_map: list[int] = []
+            for c_idx, cell in enumerate(self._active.grid[r]):
+                if not cell.is_continuation:
+                    chars.append(cell.char)
+                    col_map.extend([c_idx] * len(cell.char))
+            line = ''.join(chars)
+            start = 0
+            while True:
+                idx = line.find(needle, start)
+                if idx == -1:
+                    break
+                cols = col_map[idx:idx + len(needle)]
+                matches.append((col_map[idx], r, cols))
+                start = idx + 1
+        return matches
+
+    def styles_for_text(
+        self,
+        needle: str,
+        *,
+        row: int | None = None,
+        occurrence: int = 0,
+    ) -> list[Style]:
+        """Return Styles for each character in the Nth match of ``needle``."""
+        matches = self._find_all_with_spans(needle, row=row)
+        if not (0 <= occurrence < len(matches)):
+            return []
+        _start_col, found_row, cols = matches[occurrence]
+        return [self.cell(found_row, c).style for c in cols]
+
+    def find_styled_text(
+        self,
+        needle: str,
+        *,
+        row: int | None = None,
+        occurrence: int = 0,
+        **style_filters: Any,
+    ) -> tuple[int, int] | None:
+        """Find the Nth occurrence of ``needle`` whose characters all match ``style_filters``."""
+        matched = 0
+        for start_col, found_row, cols in self._find_all_with_spans(needle, row=row):
+            if all(self.cell(found_row, c).style.matches(**style_filters) for c in cols):
+                if matched == occurrence:
+                    return (start_col, found_row)
+                matched += 1
+        return None
+
+    def check_integrity(self) -> list[str]:
+        """Verify structural consistency of the active screen buffer."""
+        errors: list[str] = []
+        grid = self._active.grid
+        if len(grid) != self.rows:
+            errors.append(f'Grid row count {len(grid)} != {self.rows}')
+            return errors
+        if not (0 <= self.cursor_row < self.rows) or not (0 <= self.cursor_col < self.cols):
+            errors.append(
+                f'Cursor ({self.cursor_col},{self.cursor_row}) out of {self.rows}x{self.cols}'
+            )
+        for r_idx, row_cells in enumerate(grid):
+            if len(row_cells) != self.cols:
+                errors.append(f'Row {r_idx} col count {len(row_cells)} != {self.cols}')
+                continue
+            for c_idx, cell in enumerate(row_cells):
+                if cell.is_continuation:
+                    if cell.char != '':
+                        errors.append(f'Continuation cell ({c_idx},{r_idx}) has char {cell.char!r}')
+                    if c_idx == 0 or _char_width(row_cells[c_idx - 1].char) != 2:
+                        errors.append(f'Orphaned continuation cell at ({c_idx},{r_idx})')
+                else:
+                    if not cell.char or ord(cell.char[0]) < 0x20 or (
+                        len(cell.char) > 1
+                        and any(unicodedata.category(ch) not in ('Mn', 'Me') for ch in cell.char[1:])
+                    ):
+                        errors.append(f'Invalid char {cell.char!r} at ({c_idx},{r_idx})')
+                    if _char_width(cell.char) == 2:
+                        if c_idx >= self.cols - 1:
+                            errors.append(f'Width-2 char {cell.char!r} at last col ({c_idx},{r_idx})')
+                        elif not row_cells[c_idx + 1].is_continuation:
+                            errors.append(f'Missing continuation cell for wide char at ({c_idx},{r_idx})')
+        return errors
 
     def screenshot(self, *, with_ruler: bool = True) -> str:
         """Format a readable ASCII screenshot with cursor and mode metadata."""
@@ -429,6 +559,19 @@ class VirtualTerminal:
     def _put_char(self, ch: str) -> None:
         w = _char_width(ch)
         if w == 0:
+            if unicodedata.category(ch) in ('Mn', 'Me'):
+                scr = self._active
+                target_col = scr.cursor_col if scr.pending_wrap else scr.cursor_col - 1
+                if target_col >= 0:
+                    row_cells = scr.grid[scr.cursor_row]
+                    if row_cells[target_col].is_continuation and target_col > 0:
+                        target_col -= 1
+                    prev = row_cells[target_col]
+                    if not prev.is_continuation:
+                        row_cells[target_col] = Cell(
+                            char=prev.char + ch,
+                            style=prev.style,
+                        )
             return
         if w == 2 and self.cols < 2:
             return
@@ -514,7 +657,7 @@ class VirtualTerminal:
         if raw.startswith('?'):
             self._handle_dec_private(raw[1:], final)
             return
-        if raw.startswith('>'):
+        if raw and raw[0] in ('>', '<', '='):
             return
 
         scr = self._active

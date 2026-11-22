@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
-import curses
+import base64
 from enum import IntEnum
+import json
 import os
+import subprocess
+import sys
+from typing import Any
 
 
 _STATIC_KEY_FALLBACK: dict[str, bytes] = {
@@ -114,27 +118,82 @@ _FIXED_KEYS: dict[str, bytes] = {
     'space': b' ',
 }
 
-_TERMINFO_CACHE: dict[str, dict[str, bytes]] = {}
+_TERMINFO_SCREEN_CAPS = ('smcup', 'rmcup', 'cup', 'kmous', 'clear', 'rev', 'bold')
+
+_TERMINFO_CACHE: dict[str, tuple[dict[str, bytes], dict[str, bytes | int | None]]] = {}
 
 
-def _load_terminfo_map(term: str) -> dict[str, bytes]:
+def _load_terminfo_profile(
+    term: str,
+) -> tuple[dict[str, bytes], dict[str, bytes | int | None]]:
+    """Query terminfo in an isolated subprocess (curses.setupterm is one-shot per process)."""
     if term in _TERMINFO_CACHE:
         return _TERMINFO_CACHE[term]
-    loaded = dict(_STATIC_KEY_FALLBACK)
+
+    table: dict[str, bytes] = {} if term == 'dumb' else dict(_STATIC_KEY_FALLBACK)
+    caps: dict[str, bytes | int | None] = {c: None for c in _TERMINFO_SCREEN_CAPS}
+    caps['colors'] = -1
+
+    probe_code = (
+        'import base64, curses, json, os, sys\n'
+        'term = sys.argv[1]\n'
+        'key_caps = json.loads(sys.argv[2])\n'
+        'scr_caps = json.loads(sys.argv[3])\n'
+        'fd = os.open(os.devnull, os.O_WRONLY)\n'
+        'try:\n'
+        '    curses.setupterm(term, fd)\n'
+        'finally:\n'
+        '    os.close(fd)\n'
+        'keys_out = {}\n'
+        'for k, cap in key_caps.items():\n'
+        '    val = curses.tigetstr(cap)\n'
+        '    if val:\n'
+        '        keys_out[k] = base64.b64encode(val).decode("ascii")\n'
+        'caps_out = {"colors": curses.tigetnum("colors")}\n'
+        'for cap in scr_caps:\n'
+        '    val = curses.tigetstr(cap)\n'
+        '    caps_out[cap] = base64.b64encode(val).decode("ascii") if val else None\n'
+        'print(json.dumps({"keys": keys_out, "caps": caps_out}))\n'
+    )
     try:
-        fd = os.open(os.devnull, os.O_WRONLY)
-        try:
-            curses.setupterm(term, fd)
-        finally:
-            os.close(fd)
-        for key_name, cap in _TERMINFO_KEY_TO_CAP.items():
-            val = curses.tigetstr(cap)
-            if val:
-                loaded[key_name] = val
-    except (curses.error, OSError):
-        pass
-    _TERMINFO_CACHE[term] = loaded
-    return loaded
+        proc = subprocess.run(
+            [
+                sys.executable,
+                '-B',
+                '-c',
+                probe_code,
+                term,
+                json.dumps(_TERMINFO_KEY_TO_CAP),
+                json.dumps(list(_TERMINFO_SCREEN_CAPS)),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5.0,
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            payload = json.loads(proc.stdout.strip())
+            if term != 'dumb':
+                table = dict(_STATIC_KEY_FALLBACK)
+            else:
+                table = {}
+            for k, b64 in payload['keys'].items():
+                table[k] = base64.b64decode(b64)
+            raw_caps = payload['caps']
+            caps['colors'] = raw_caps.get('colors', -1)
+            for cap in _TERMINFO_SCREEN_CAPS:
+                b64 = raw_caps.get(cap)
+                caps[cap] = base64.b64decode(b64) if b64 is not None else None
+    except (OSError, subprocess.SubprocessError, ValueError):
+        if term != 'dumb':
+            caps.update({
+                'colors': 8,
+                'smcup': b'\x1b[?1049h',
+                'cup': b'\x1b[%i%p1%d;%p2%dH',
+                'kmous': b'\x1b[M',
+            })
+
+    _TERMINFO_CACHE[term] = (table, caps)
+    return table, caps
 
 
 class KeyMap:
@@ -142,7 +201,32 @@ class KeyMap:
 
     def __init__(self, term: str = 'xterm-256color') -> None:
         self.term = term
-        self._table = _load_terminfo_map(term)
+        self._table, caps = _load_terminfo_profile(term)
+        self.capabilities: dict[str, bytes | int | None] = dict(caps)
+
+    def has_capability(self, name: str) -> bool:
+        """Return True if terminfo capability ``name`` is present / positive."""
+        val = self.capabilities.get(name)
+        if isinstance(val, int):
+            return val > 0
+        return bool(val)
+
+    @property
+    def supports_alt_screen(self) -> bool:
+        return self.has_capability('smcup')
+
+    @property
+    def supports_cursor_addressing(self) -> bool:
+        return self.has_capability('cup')
+
+    @property
+    def supports_sgr_mouse(self) -> bool:
+        kmous = self.capabilities.get('kmous')
+        return kmous == b'\x1b[<' or self.term.endswith('1006')
+
+    @property
+    def supports_colors(self) -> bool:
+        return self.has_capability('colors')
 
     def encode(self, key: str) -> bytes:
         """Encode a single symbolic key or character into wire bytes."""
@@ -150,6 +234,11 @@ class KeyMap:
             raise KeyError('Empty key name')
         if len(key) == 1:
             return key.encode('utf-8')
+
+        if '+' in key:
+            raw_mod, raw_rest = key.split('+', 1)
+            if raw_mod.lower().strip() == 'alt' and len(raw_rest) == 1:
+                return b'\x1b' + raw_rest.encode('utf-8')
 
         norm = key.lower().strip()
         norm = _ALIASES.get(norm, norm)

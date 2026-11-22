@@ -228,6 +228,41 @@ class TestVirtualTerminalEditingScrollAndStyles(unittest.TestCase):
         self.assertIn('0:', shot)
         self.assertIn('cursor=', shot)
 
+    def test_style_queries_csi_guards_combining_and_integrity(self) -> None:
+        vt = VirtualTerminal(rows=3, cols=24)
+        # Private CSI sequences with '>', '<', '=' prefixes must not print garbage
+        vt.feed('\x1b[>0;10;0c\x1b[<u\x1b[=0u')
+        # Styled ASCII + combining mark + styled CJK wide characters
+        vt.feed('\x1b[32;1mFile\x1b[m ')
+        vt.feed('\x1b[7;34m日\x1b[me\u0301 ')
+        vt.feed('\x1b[31mFile\x1b[m')
+
+        self.assertEqual(vt.check_integrity(), [])
+        self.assertEqual(vt.row_text(0), 'File 日e\u0301 File')
+        self.assertEqual(len(vt.row_styles(0)), 24)
+        self.assertEqual(len(vt.region_styles(0, 0, 1, 4)[0]), 4)
+
+        self.assertTrue(vt.style_at(0, 0).matches(fg=2, bold=True))
+        self.assertFalse(vt.style_at(0, 0).matches(reverse=True))
+
+        # Distinguish differently styled occurrences of 'File' and wide CJK text
+        self.assertEqual(vt.find_styled_text('File', fg=2, bold=True), (0, 0))
+        self.assertEqual(vt.find_styled_text('File', fg=1), (9, 0))
+        self.assertIsNone(vt.find_styled_text('File', reverse=True))
+
+        # Column 5 holds '日', col 6 is its continuation cell
+        cjk_styles = vt.styles_for_text('日', row=0)
+        self.assertIsNotNone(cjk_styles)
+        assert cjk_styles is not None
+        self.assertEqual(len(cjk_styles), 1)
+        self.assertTrue(cjk_styles[0].matches(reverse=True, fg=4))
+        self.assertEqual(vt.find_styled_text('日', reverse=True, fg=4), (5, 0))
+
+        # Corrupting a continuation cell intentionally must be reported by check_integrity()
+        vt._active.grid[0][6] = Cell(char='X')
+        errs = vt.check_integrity()
+        self.assertTrue(any('continuation' in e.lower() for e in errs))
+
 
 if __name__ == '__main__':
     unittest.main()

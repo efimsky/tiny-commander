@@ -54,6 +54,29 @@ class TestKeyMap(unittest.TestCase):
         with self.assertRaises(KeyError):
             self.km.encode('hyper+f1')
 
+    def test_alt_preserves_case_and_isolated_terminfo_profiles(self) -> None:
+        # Alt+uppercase must preserve case (unlike Ctrl/F-keys)
+        self.assertEqual(self.km.encode('alt+O'), b'\x1bO')
+        self.assertEqual(self.km.encode('alt+o'), b'\x1bo')
+
+        # Distinct TERM values queried in same process must return independent capabilities
+        km_xterm = KeyMap('xterm-256color')
+        km_dumb = KeyMap('dumb')
+        km_vt100 = KeyMap('vt100')
+
+        self.assertTrue(km_xterm.supports_alt_screen)
+        self.assertTrue(km_xterm.supports_cursor_addressing)
+        self.assertTrue(km_xterm.supports_colors)
+        self.assertTrue(km_xterm.has_capability('smcup'))
+
+        self.assertFalse(km_dumb.supports_alt_screen)
+        self.assertFalse(km_dumb.supports_cursor_addressing)
+        self.assertFalse(km_dumb.supports_colors)
+
+        # Re-checking xterm-256color after dumb must still reflect xterm capabilities
+        self.assertTrue(KeyMap('xterm-256color').supports_colors)
+        self.assertIsInstance(km_vt100.capabilities, dict)
+
 
 class TestMouseEncoder(unittest.TestCase):
     """Test X10 and SGR mouse protocol byte sequences."""

@@ -1,15 +1,22 @@
 """Unit tests for the seeded stateful ActionFuzzer engine using an in-memory fake driver."""
 
+import os
+from pathlib import Path
+import tempfile
 import unittest
 
 from tests.terminal.fuzzer import (
     ActionFuzzer,
+    FilesystemShadowInvariant,
     FuzzAction,
     FuzzConfig,
     InvariantError,
+    SandboxDriverFactory,
+    chrome_layout_invariant,
     default_invariants,
+    screen_integrity_invariant,
 )
-from tests.terminal.virtual_terminal import VirtualTerminal
+from tests.terminal.virtual_terminal import Cell, VirtualTerminal
 
 
 class _FakeDriver:
@@ -172,6 +179,97 @@ class TestActionFuzzer(unittest.TestCase):
         with self.assertRaises(InvariantError) as ctx:
             fuzzer.replay(lambda: _TraceDriver(), [FuzzAction('text', 'abc', 'type(abc)')])
         self.assertEqual(ctx.exception.invariant_name, 'no_traceback_text')
+
+    def test_profiles_chrome_and_screen_integrity_invariants(self) -> None:
+        with self.assertRaises(ValueError):
+            ActionFuzzer(FuzzConfig(profile='nonexistent_profile'))
+
+        for profile in (
+            'balanced',
+            'mode_collisions',
+            'modal_and_mouse',
+            'file_ops_safe',
+            'file_ops_destructive',
+        ):
+            cfg = FuzzConfig(
+                seed=42,
+                steps=12,
+                profile=profile,
+                extra_keys=('ctrl+u', 'f3'),
+                step_settle_timeout=0.0,
+                quit_at_end=False,
+            )
+            report = ActionFuzzer(
+                cfg,
+                invariants=[
+                    *default_invariants(),
+                    ('integrity', screen_integrity_invariant),
+                    ('chrome', chrome_layout_invariant),
+                ],
+            ).run(lambda: _FakeDriver())
+            self.assertEqual(report.steps_executed, 12)
+
+        # Chrome invariant detects blank screen or curses.error
+        drv = _FakeDriver()
+        drv.screen.feed('\x1b[2Jcurses.error: addwstr')
+        self.assertIn('curses.error', chrome_layout_invariant(drv, 0, []) or '')
+
+        drv_corrupt = _FakeDriver()
+        drv_corrupt.screen.feed('\x1b[H日')
+        drv_corrupt.screen._active.grid[0][1] = Cell(char='Z')
+        self.assertIsNotNone(screen_integrity_invariant(drv_corrupt, 0, []))
+
+    def test_filesystem_shadow_invariant_and_sandbox_factory(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tpl = Path(td) / 'template'
+            tpl.mkdir()
+            (tpl / 'hello.txt').write_text('world', encoding='utf-8')
+            (tpl / 'link_to_canary').symlink_to('../canaries/secret.txt')
+
+            class _CleanupFake(_FakeDriver):
+                def __init__(self, **kw):
+                    super().__init__(rows=kw['rows'], cols=kw['cols'])
+                    self._temp_dirs = []
+                    self.sandbox_env = kw['env']
+
+                def close(self) -> None:
+                    from tests.terminal.driver import _rmtree_force
+                    for d in self._temp_dirs:
+                        _rmtree_force(d)
+                    self._temp_dirs.clear()
+
+            factory = SandboxDriverFactory(
+                template_dir=tpl,
+                canaries={'secret.txt': 'do-not-touch'},
+                driver_factory=_CleanupFake,
+            )
+
+            # Strict shadow invariant passes when tree untouched, catches mutation
+            strict_inv = FilesystemShadowInvariant(strict=True)
+            with factory() as drv:
+                self.assertEqual(drv.sandbox_root.joinpath('hello.txt').read_text(), 'world')
+                self.assertEqual(os.readlink(drv.sandbox_root / 'link_to_canary'), '../canaries/secret.txt')
+                self.assertIsNone(strict_inv(drv, 0, []))
+
+                drv.sandbox_root.joinpath('extra.txt').write_text('mutated')
+                err = strict_inv(drv, 1, [])
+                self.assertIsNotNone(err)
+                self.assertIn('extra.txt', err)
+                cleanup_target = drv._temp_dirs[0]
+
+            # Directory was cleaned up automatically when close() returned via __exit__
+            self.assertFalse(Path(cleanup_target).exists())
+
+            # Destructive mode permits bounded edits inside work dir but forbids canary mutation
+            destr_inv = FilesystemShadowInvariant(strict=False, max_entries=10)
+            with factory() as drv:
+                drv.sandbox_root.joinpath('extra.txt').write_text('allowed')
+                self.assertIsNone(destr_inv(drv, 0, []))
+
+                drv._canary_root.joinpath('secret.txt').write_text('pwned')
+                err = destr_inv(drv, 1, [])
+                self.assertIsNotNone(err)
+                self.assertIn('external_canary', err)
 
 
 if __name__ == '__main__':
