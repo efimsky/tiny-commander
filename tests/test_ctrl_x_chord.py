@@ -25,8 +25,25 @@ class TestCtrlXChord(unittest.TestCase):
 
     @mock.patch('curses.curs_set')
     @mock.patch('curses.has_colors', return_value=False)
+    def test_ctrl_x_sets_pending_and_returns_none(self, _mock_colors, _mock_curs_set):
+        """First keypress Ctrl+X sets ctrl_x_pending and returns NONE without polling."""
+        stdscr = mock.MagicMock()
+        stdscr.getmaxyx.return_value = (24, 80)
+
+        app = App(stdscr)
+        app.setup()
+
+        with mock.patch.object(app, '_get_next_key_if_available') as mock_next:
+            action = app.handle_key(24)
+
+        self.assertEqual(action, Action.NONE)
+        self.assertTrue(app.ctrl_x_pending)
+        mock_next.assert_not_called()
+
+    @mock.patch('curses.curs_set')
+    @mock.patch('curses.has_colors', return_value=False)
     def test_ctrl_x_c_triggers_chmod(self, _mock_colors, _mock_curs_set):
-        """Ctrl+X followed by 'c' triggers CHMOD action."""
+        """Ctrl+X followed by 'c' triggers CHMOD action via two-keypress state."""
         stdscr = mock.MagicMock()
         stdscr.getmaxyx.return_value = (24, 80)
 
@@ -36,17 +53,17 @@ class TestCtrlXChord(unittest.TestCase):
         app.right_panel._path = Path(self.tmpdir)
         app.left_panel.refresh()
 
-        # Ctrl+X is ASCII 24
-        # Simulate Ctrl+X then 'c' via _get_next_key_if_available
-        with mock.patch.object(app, '_get_next_key_if_available', return_value=ord('c')):
-            action = app.handle_key(24)
+        self.assertEqual(app.handle_key(24), Action.NONE)
+        self.assertTrue(app.ctrl_x_pending)
 
+        action = app.handle_key(ord('c'))
         self.assertEqual(action, Action.CHMOD)
+        self.assertFalse(app.ctrl_x_pending)
 
     @mock.patch('curses.curs_set')
     @mock.patch('curses.has_colors', return_value=False)
     def test_ctrl_x_o_triggers_chown(self, _mock_colors, _mock_curs_set):
-        """Ctrl+X followed by 'o' triggers CHOWN action."""
+        """Ctrl+X followed by 'o' triggers CHOWN action via two-keypress state."""
         stdscr = mock.MagicMock()
         stdscr.getmaxyx.return_value = (24, 80)
 
@@ -55,11 +72,12 @@ class TestCtrlXChord(unittest.TestCase):
         app.left_panel._path = Path(self.tmpdir)
         app.right_panel._path = Path(self.tmpdir)
 
-        # Simulate Ctrl+X then 'o'
-        with mock.patch.object(app, '_get_next_key_if_available', return_value=ord('o')):
-            action = app.handle_key(24)
+        self.assertEqual(app.handle_key(24), Action.NONE)
+        self.assertTrue(app.ctrl_x_pending)
 
+        action = app.handle_key(ord('o'))
         self.assertEqual(action, Action.CHOWN)
+        self.assertFalse(app.ctrl_x_pending)
 
     @mock.patch('curses.curs_set')
     @mock.patch('curses.has_colors', return_value=False)
@@ -71,43 +89,61 @@ class TestCtrlXChord(unittest.TestCase):
         app = App(stdscr)
         app.setup()
 
-        with mock.patch.object(app, '_get_next_key_if_available', return_value=ord('C')):
-            action = app.handle_key(24)
-
+        self.assertEqual(app.handle_key(24), Action.NONE)
+        action = app.handle_key(ord('C'))
         self.assertEqual(action, Action.CHMOD)
+        self.assertFalse(app.ctrl_x_pending)
 
-    @mock.patch('curses.ungetch')
     @mock.patch('curses.curs_set')
     @mock.patch('curses.has_colors', return_value=False)
-    def test_ctrl_x_other_key_ignored(self, _mock_colors, _mock_curs_set, _mock_ungetch):
-        """Ctrl+X followed by other keys returns NONE."""
+    def test_ctrl_x_uppercase_o_triggers_chown(self, _mock_colors, _mock_curs_set):
+        """Ctrl+X followed by 'O' (uppercase) triggers CHOWN action."""
         stdscr = mock.MagicMock()
         stdscr.getmaxyx.return_value = (24, 80)
 
         app = App(stdscr)
         app.setup()
 
-        # Simulate Ctrl+X then 'x' (not a valid chord)
-        with mock.patch.object(app, '_get_next_key_if_available', return_value=ord('x')):
-            action = app.handle_key(24)
-
-        self.assertEqual(action, Action.NONE)
+        self.assertEqual(app.handle_key(24), Action.NONE)
+        action = app.handle_key(ord('O'))
+        self.assertEqual(action, Action.CHOWN)
+        self.assertFalse(app.ctrl_x_pending)
 
     @mock.patch('curses.curs_set')
     @mock.patch('curses.has_colors', return_value=False)
-    def test_ctrl_x_timeout(self, _mock_colors, _mock_curs_set):
-        """Ctrl+X without follow-up key returns NONE."""
+    def test_ctrl_x_other_key_ignored_and_not_typed(self, _mock_colors, _mock_curs_set):
+        """Ctrl+X followed by invalid key returns NONE without typing to command line."""
         stdscr = mock.MagicMock()
         stdscr.getmaxyx.return_value = (24, 80)
 
         app = App(stdscr)
         app.setup()
 
-        # Simulate timeout (no follow-up key)
-        with mock.patch.object(app, '_get_next_key_if_available', return_value=-1):
-            action = app.handle_key(24)
+        self.assertEqual(app.handle_key(24), Action.NONE)
+        action = app.handle_key(ord('x'))
 
         self.assertEqual(action, Action.NONE)
+        self.assertFalse(app.ctrl_x_pending)
+        self.assertEqual(app.command_line.input_text, '')
+
+    @mock.patch('curses.curs_set')
+    @mock.patch('curses.has_colors', return_value=False)
+    def test_ctrl_x_escape_cancels_chord_without_escape_pending(self, _mock_colors, _mock_curs_set):
+        """Ctrl+X followed by Escape cancels chord cleanly without setting escape_pending."""
+        stdscr = mock.MagicMock()
+        stdscr.getmaxyx.return_value = (24, 80)
+
+        app = App(stdscr)
+        app.setup()
+        app.command_line.input_text = 'ls'
+
+        self.assertEqual(app.handle_key(24), Action.NONE)
+        action = app.handle_key(27)
+
+        self.assertEqual(action, Action.NONE)
+        self.assertFalse(app.ctrl_x_pending)
+        self.assertFalse(app.escape_pending)
+        self.assertEqual(app.command_line.input_text, 'ls')
 
 
 class TestChmodChownActions(unittest.TestCase):

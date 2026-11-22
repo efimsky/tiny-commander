@@ -1,6 +1,7 @@
 """Main application class for Tiny Commander."""
 
 import curses
+import io
 import os
 import shlex
 import stat
@@ -10,6 +11,7 @@ import termios
 import tty
 from dataclasses import dataclass
 from enum import Enum, auto
+from pathlib import Path
 from typing import Any, Callable
 
 from tnc.colors import init_colors, is_classic_theme, set_classic_theme
@@ -34,6 +36,7 @@ from tnc.file_ops import (
 )
 from tnc.function_bar import FunctionBar
 from tnc.menu import MenuBar
+from tnc.modal import Modal
 from tnc.panel import Panel
 from tnc.status_bar import StatusBar
 from tnc.utils import safe_addstr
@@ -64,6 +67,8 @@ class Action(Enum):
     DESELECT_ALL = auto()
     INVERT_SELECTION = auto()
     TOGGLE_HIDDEN = auto()
+    TOGGLE_HIDDEN_LEFT = auto()
+    TOGGLE_HIDDEN_RIGHT = auto()
     EDITOR_SETTINGS = auto()
     PAGER_SETTINGS = auto()
     TOGGLE_CLASSIC_COLORS = auto()
@@ -102,6 +107,8 @@ MENU_ACTION_MAP: dict[str, Action] = {
     'invert_selection': Action.INVERT_SELECTION,
     'select_pattern': Action.SELECT_PATTERN,
     'toggle_hidden': Action.TOGGLE_HIDDEN,
+    'toggle_hidden_left': Action.TOGGLE_HIDDEN_LEFT,
+    'toggle_hidden_right': Action.TOGGLE_HIDDEN_RIGHT,
     'editor_settings': Action.EDITOR_SETTINGS,
     'pager_settings': Action.PAGER_SETTINGS,
     'toggle_classic_colors': Action.TOGGLE_CLASSIC_COLORS,
@@ -179,6 +186,7 @@ class App:
         self.function_bar: FunctionBar | None = None
         self.config: Config = Config()
         self.escape_pending: bool = False  # For double-Escape to clear command line
+        self.ctrl_x_pending: bool = False  # For Ctrl+X chord (Ctrl+X c/o)
         self._mouse_active: bool = False  # Whether mouse events are currently enabled
 
     @property
@@ -193,7 +201,10 @@ class App:
 
     def setup(self) -> None:
         """Configure curses environment for the application."""
-        curses.curs_set(0)
+        try:
+            curses.curs_set(0)
+        except curses.error:
+            pass
         self.stdscr.keypad(True)
         self.stdscr.nodelay(False)
 
@@ -205,6 +216,9 @@ class App:
         # Enable mouse support if configured
         if self.config.mouse_enabled:
             self._enable_mouse()
+
+        # Hook mouse-button swap translator into Modal dialogs
+        Modal.button_translator = self._translate_button_state
 
         # Initialize panels
         self._init_panels()
@@ -235,10 +249,12 @@ class App:
             Action.SELECT_ALL: lambda: self.active_panel.select_all(),
             Action.DESELECT_ALL: lambda: self.active_panel.selected.clear(),
             Action.INVERT_SELECTION: lambda: self.active_panel.invert_selection(),
-            # Sort operations (active panel)
+            # Sort operations (active panel and per-panel hidden toggles)
             Action.CYCLE_SORT: lambda: self.active_panel.cycle_sort(),
             Action.TOGGLE_SORT_REVERSE: lambda: self.active_panel.toggle_sort_reverse(),
             Action.TOGGLE_HIDDEN: lambda: self.active_panel.toggle_hidden(),
+            Action.TOGGLE_HIDDEN_LEFT: lambda: self.left_panel.toggle_hidden(),
+            Action.TOGGLE_HIDDEN_RIGHT: lambda: self.right_panel.toggle_hidden(),
             # Directory operations
             Action.MEASURE_DIR_SIZE: self._measure_dir_size,
             Action.OPEN_IN_FINDER: self.open_in_finder,
@@ -287,12 +303,13 @@ class App:
         """Initialize the two panels."""
         rows, cols = self.stdscr.getmaxyx()
         panel_width = cols // 2
+        right_width = cols - panel_width
         # Leave room for menu bar, status bar, command line, and function bar
         panel_height = rows - 4
 
         cwd = os.getcwd()
         self.left_panel = Panel(cwd, width=panel_width, height=panel_height)
-        self.right_panel = Panel(cwd, width=panel_width, height=panel_height)
+        self.right_panel = Panel(cwd, width=right_width, height=panel_height)
 
         # Left panel is active by default
         self.left_panel.is_active = True
@@ -315,16 +332,18 @@ class App:
         """Handle terminal resize event."""
         rows, cols = self.stdscr.getmaxyx()
         panel_width = cols // 2
+        right_width = cols - panel_width
         # Panel height: rows - 4 (menu bar + status bar + command line + function bar)
         panel_height = rows - 4
 
         if self.left_panel:
             self.left_panel.resize(panel_width, panel_height)
         if self.right_panel:
-            self.right_panel.resize(panel_width, panel_height)
+            self.right_panel.resize(right_width, panel_height)
 
     def cleanup(self) -> None:
         """Restore terminal state."""
+        Modal.button_translator = None
         try:
             curses.curs_set(1)
         except curses.error:
@@ -371,9 +390,6 @@ class App:
 
     def draw(self) -> None:
         """Draw the interface."""
-        # Clear function bar click feedback from previous frame
-        self.function_bar.clear_click_feedback()
-
         # Use erase() instead of clear() to reduce flicker.
         # clear() forces a full terminal redraw; erase() only clears the buffer.
         self.stdscr.erase()
@@ -384,11 +400,17 @@ class App:
         panel_y = 1
         panel_height = rows - 4  # menu(1) + status(1) + cmdline(1) + funcbar(1)
 
-        # Resize panels if needed
+        # Resize panels if needed (check both height and width, including odd-width remainder)
         panel_width = cols // 2
-        if self.left_panel.height != panel_height:
+        right_width = cols - panel_width
+        if (
+            self.left_panel.height != panel_height
+            or self.right_panel.height != panel_height
+            or self.left_panel.width != panel_width
+            or self.right_panel.width != right_width
+        ):
             self.left_panel.resize(panel_width, panel_height)
-            self.right_panel.resize(panel_width, panel_height)
+            self.right_panel.resize(right_width, panel_height)
 
         # Draw panels (always exist after setup)
         self.left_panel.render(self.stdscr, 0, panel_y)
@@ -400,18 +422,30 @@ class App:
 
         # Draw status bar (row before command line)
         is_left = self.active_panel == self.left_panel
-        hint = '[Esc] again to clear' if self.escape_pending else None
+        if self.escape_pending:
+            hint = '[Esc] again to clear'
+        elif self.ctrl_x_pending:
+            hint = '[Ctrl+X] c=chmod o=chown'
+        else:
+            hint = None
         self.status_bar.render(self.stdscr, rows - 3, cols, self.active_panel, is_left, hint)
 
         # Draw command line (row before function bar)
         cursor_x = self.command_line.render(self.stdscr, rows - 2, cols)
 
-        # Draw function key bar at bottom
+        # Draw function key bar at bottom, then clear one-frame click feedback
         self.function_bar.render(self.stdscr, rows - 1, cols)
+        self.function_bar.clear_click_feedback()
 
         # Show cursor on command line (like mc)
-        curses.curs_set(1)
-        self.stdscr.move(rows - 2, min(cursor_x, cols - 1))
+        try:
+            curses.curs_set(1)
+        except curses.error:
+            pass
+        try:
+            self.stdscr.move(rows - 2, max(0, min(cursor_x, cols - 1)))
+        except curses.error:
+            pass
 
         # Use noutrefresh() + doupdate() for atomic screen update to reduce flicker.
         # This batches all changes before sending to the terminal.
@@ -425,7 +459,17 @@ class App:
             self.escape_pending = False
 
         if key == curses.KEY_F10:
+            self.ctrl_x_pending = False
             return Action.QUIT
+
+        # Consume the second key of a pending Ctrl+X chord before modes/command line
+        if self.ctrl_x_pending:
+            self.ctrl_x_pending = False
+            if key in (ord('c'), ord('C')):
+                return Action.CHMOD
+            if key in (ord('o'), ord('O')):
+                return Action.CHOWN
+            return Action.NONE
 
         # Handle search mode input first
         if self.active_panel.search_mode:
@@ -490,16 +534,9 @@ class App:
                         self.escape_pending = True
             return Action.NONE
 
-        # Handle Ctrl+X chord (ASCII 24) for chmod/chown
+        # Start Ctrl+X chord (ASCII 24) for chmod/chown
         if key == 24:  # Ctrl+X
-            next_key = self._get_next_key_if_available()
-            if next_key in (ord('c'), ord('C')):
-                return Action.CHMOD
-            elif next_key in (ord('o'), ord('O')):
-                return Action.CHOWN
-            elif next_key != -1:
-                # Got a different key after Ctrl+X - push it back for processing
-                curses.ungetch(next_key)
+            self.ctrl_x_pending = True
             return Action.NONE
 
         # Command line editing keys: arrows, backspace, delete
@@ -636,9 +673,7 @@ class App:
             return Action.DELETE
         elif key == curses.KEY_F9:
             # Toggle dropdown (menu bar is always visible)
-            self.menu.dropdown_open = not self.menu.dropdown_open
-            if self.menu.dropdown_open:
-                self.menu.selected_item = 0
+            self._toggle_menu_dropdown()
             return Action.NONE
         # Shift+F keys (KEY_F13-KEY_F24 are Shift+F1-F12)
         elif key == curses.KEY_F3 + 12:  # Shift+F3 = KEY_F15
@@ -653,19 +688,19 @@ class App:
             return Action.TOGGLE_SORT_REVERSE
         return None
 
-    def switch_panel(self) -> None:
-        """Switch active panel between left and right."""
-        if self.active_panel == self.left_panel:
-            self.active_panel = self.right_panel
-        else:
-            self.active_panel = self.left_panel
-
-        # Update is_active flags
+    def _activate_panel(self, panel: Panel) -> None:
+        """Activate `panel`, cancelling any active quick search on the previous panel."""
+        if self.active_panel != panel and self.active_panel.search_mode:
+            self.active_panel.exit_search(confirm=False)
+        self.active_panel = panel
         self.left_panel.is_active = (self.active_panel == self.left_panel)
         self.right_panel.is_active = (self.active_panel == self.right_panel)
-
-        # Update command line path to active panel's directory
         self.command_line.set_path(str(self.active_panel.path))
+
+    def switch_panel(self) -> None:
+        """Switch active panel between left and right."""
+        target = self.right_panel if self.active_panel == self.left_panel else self.left_panel
+        self._activate_panel(target)
 
     def get_other_panel(self) -> Panel:
         """Get the panel that is not currently active."""
@@ -782,36 +817,54 @@ class App:
             summary_kwarg='moved',
         )
 
-    def _open_with_external(self, tool: str | None, tool_name: str, refresh_panel: bool = False) -> ViewResult:
-        """Open current file with an external tool (editor or pager).
+    def _open_with_external(
+        self,
+        tool: str | None,
+        tool_name: str,
+        refresh_panel: bool = False,
+        verb: str = 'view',
+        file_path: Path | None = None,
+    ) -> ViewResult:
+        """Open current or explicit file with an external tool (editor or pager).
 
         Args:
             tool: The command to run (e.g., 'nano', 'less -R').
             tool_name: Human-readable name for error messages ('editor' or 'pager').
             refresh_panel: Whether to refresh the panel after (for edit, not view).
+            verb: Action verb for error messages ('view' or 'edit').
+            file_path: Optional explicit path to open instead of the cursor entry.
 
         Returns:
             ViewResult with success status.
         """
-        if self.active_panel.cursor >= len(self.active_panel.entries):
-            return ViewResult(success=False, error='No file selected')
+        if file_path is None:
+            if self.active_panel.cursor < 0 or self.active_panel.cursor >= len(self.active_panel.entries):
+                return ViewResult(success=False, error='No file selected')
 
-        entry = self.active_panel.entries[self.active_panel.cursor]
+            entry = self.active_panel.entries[self.active_panel.cursor]
 
-        if entry.name == '..':
-            return ViewResult(success=False, error=f'Cannot {tool_name[0:4]} parent directory')
+            if entry.name == '..':
+                return ViewResult(success=False, error=f'Cannot {verb} parent directory')
 
-        file_path = self.active_panel.path / entry.name
+            file_path = self.active_panel.path / entry.name
 
         if file_path.is_dir():
-            return ViewResult(success=False, error=f'Cannot {tool_name[0:4]} directory')
+            return ViewResult(success=False, error=f'Cannot {verb} directory')
 
         if not tool:
             return ViewResult(success=False, error=f'No {tool_name} configured')
 
+        try:
+            cmd = shlex.split(tool)
+        except ValueError as e:
+            return ViewResult(success=False, error=f'Invalid {tool_name} command: {e}')
+
+        if not cmd:
+            return ViewResult(success=False, error=f'No {tool_name} configured')
+
         curses.endwin()
         try:
-            completed = subprocess.run(shlex.split(tool) + [str(file_path)])
+            completed = subprocess.run(cmd + [str(file_path)])
             if completed.returncode != 0:
                 return ViewResult(
                     success=False,
@@ -836,10 +889,10 @@ class App:
             pager = self.config.pager
             if not pager:
                 return ViewResult(success=False, error='Pager setup cancelled')
-        return self._open_with_external(pager, 'pager')
+        return self._open_with_external(pager, 'pager', verb='view')
 
-    def edit_current_file(self) -> ViewResult:
-        """Edit current file with editor."""
+    def edit_current_file(self, file_path: Path | None = None) -> ViewResult:
+        """Edit current file (or explicit file_path) with editor."""
         editor = self.config.get_editor()
         if not editor:
             # Prompt user to select an editor
@@ -849,7 +902,9 @@ class App:
                 return ViewResult(success=False, error='Editor setup cancelled')
         # Map display name to actual command (e.g., TextEdit -> open -e)
         editor_cmd = Config.get_editor_command(editor)
-        return self._open_with_external(editor_cmd, 'editor', refresh_panel=True)
+        return self._open_with_external(
+            editor_cmd, 'editor', refresh_panel=True, verb='edit', file_path=file_path
+        )
 
     def open_in_finder(self) -> None:
         """Open current selection in Finder (macOS only).
@@ -953,17 +1008,18 @@ class App:
         """
         try:
             # Only capture click and scroll events, not motion
-            # Note: BUTTON5 not available on all platforms (macOS ncurses)
+            # Note: BUTTON5_PRESSED may be absent on macOS ncurses (0x200000 fallback)
             mouse_events = (
                 curses.BUTTON1_CLICKED | curses.BUTTON1_DOUBLE_CLICKED |
                 curses.BUTTON2_CLICKED |  # Middle click (scroll wheel click)
                 curses.BUTTON3_CLICKED |  # Right click
                 getattr(curses, 'BUTTON3_DOUBLE_CLICKED', 0) |  # Right double-click (for swap)
                 curses.BUTTON4_PRESSED |  # Scroll up
-                getattr(curses, 'BUTTON5_PRESSED', 0)  # Scroll down (if available)
+                getattr(curses, 'BUTTON5_PRESSED', 0x200000)  # Scroll down
             )
             result = curses.mousemask(mouse_events)
-            self._mouse_active = result != 0
+            availmask = result[0] if isinstance(result, tuple) else result
+            self._mouse_active = bool(availmask)
         except curses.error:
             # Curses not properly initialized (e.g., in tests)
             self._mouse_active = False
@@ -982,16 +1038,16 @@ class App:
         if self._mouse_active:
             self._disable_mouse()
             self.config.mouse_enabled = False
-        else:
-            self._enable_mouse()
+        elif self._enable_mouse():
             self.config.mouse_enabled = True
         self._save_config_or_warn()
 
     def _toggle_menu_dropdown(self) -> None:
         """Toggle menu dropdown open/closed."""
-        self.menu.dropdown_open = not self.menu.dropdown_open
         if self.menu.dropdown_open:
-            self.menu.selected_item = 0
+            self.menu.dropdown_open = False
+        else:
+            self.menu.open_dropdown()
 
     def _show_help(self) -> None:
         """F1: open the keybindings help modal (issue #78)."""
@@ -1087,9 +1143,7 @@ class App:
                         self.menu.dropdown_open = False
                     else:
                         # Click different menu or dropdown closed - open/switch
-                        self.menu.selected_menu = menu_idx
-                        self.menu.dropdown_open = True
-                        self.menu.selected_item = 0
+                        self.menu.open_dropdown(menu_idx)
                 return Action.NONE
 
             # Click outside menu area while dropdown open - close dropdown
@@ -1113,22 +1167,14 @@ class App:
 
         # Check if click is in left panel
         if self.left_panel.contains_point(x, y):
-            # Switch to left panel if not already active
             if self.active_panel != self.left_panel:
-                self.active_panel = self.left_panel
-                self.left_panel.is_active = True
-                self.right_panel.is_active = False
-                self.command_line.set_path(str(self.active_panel.path))
+                self._activate_panel(self.left_panel)
             return self._handle_panel_click(self.left_panel, x, y, button_state)
 
         # Check if click is in right panel
         if self.right_panel.contains_point(x, y):
-            # Switch to right panel if not already active
             if self.active_panel != self.right_panel:
-                self.active_panel = self.right_panel
-                self.right_panel.is_active = True
-                self.left_panel.is_active = False
-                self.command_line.set_path(str(self.active_panel.path))
+                self._activate_panel(self.right_panel)
             return self._handle_panel_click(self.right_panel, x, y, button_state)
 
         return Action.NONE
@@ -1183,13 +1229,17 @@ class App:
 
         return Action.NONE
 
-    def _show_error(self, message: str) -> None:
+    def _show_error(self, message: str, details: list[str] | None = None) -> None:
         """Display an error message to the user.
 
         Args:
             message: Error message to display.
+            details: Optional list of error detail lines.
         """
-        show_error_dialog(self.stdscr, 'Error', message)
+        if details is not None:
+            show_error_dialog(self.stdscr, 'Error', message, details=details)
+        else:
+            show_error_dialog(self.stdscr, 'Error', message)
 
     def _get_next_key_if_available(self) -> int:
         """Check for next key in input buffer without blocking.
@@ -1212,6 +1262,44 @@ class App:
         if entry.name != '..':
             self.command_line.insert_filename(entry.name)
 
+    def _run_in_terminal(
+        self, args: str | list[str], cwd: Path, *, shell: bool = False
+    ) -> None:
+        """Suspend curses, run a shell command or executable, wait for a key, and refresh."""
+        curses.endwin()
+        try:
+            try:
+                run_kwargs: dict[str, Any] = {'cwd': str(cwd)}
+                if shell:
+                    run_kwargs['shell'] = True
+                # Intentional when shell=True: `command` is user-typed input from the
+                # command bar; shell=True enables pipes, redirects, globs, env vars.
+                completed = subprocess.run(args, **run_kwargs)  # noqa: S602  # nosemgrep: subprocess-shell-true
+                if completed.returncode != 0:
+                    print(f'\n[Exit {completed.returncode}]', end='', flush=True)
+            except KeyboardInterrupt:
+                print('\n[Interrupted]')
+            except (OSError, subprocess.SubprocessError) as e:
+                print(f'\nError: {e}')
+
+            print('\n[Press any key to continue]', end='', flush=True)
+            try:
+                fd = sys.stdin.fileno()
+                old_settings = termios.tcgetattr(fd)
+                try:
+                    tty.setraw(fd)
+                    sys.stdin.read(1)
+                finally:
+                    termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+            except (termios.error, OSError, io.UnsupportedOperation):
+                pass
+        finally:
+            self.stdscr.refresh()
+
+        # Refresh both panels to show any file changes
+        self.left_panel.refresh()
+        self.right_panel.refresh()
+
     def _execute_command(self) -> None:
         """Execute the command line input in full terminal mode.
 
@@ -1228,35 +1316,9 @@ class App:
 
         # Clear the command line
         self.command_line.handle_key(curses.KEY_ENTER)
+        self._run_in_terminal(command, self.active_panel.path, shell=True)
 
-        # Suspend curses and run command in terminal
-        curses.endwin()
-        try:
-            # Intentional: `command` is user-typed input from the command bar;
-            # shell=True is what enables pipes, redirects, globs, env-var expansion.
-            completed = subprocess.run(command, shell=True, cwd=str(self.active_panel.path))  # noqa: S602  # nosemgrep: subprocess-shell-true
-            if completed.returncode != 0:
-                print(f'\n[Exit {completed.returncode}]', end='', flush=True)
-        except (OSError, subprocess.SubprocessError) as e:
-            print(f'\nError: {e}')
-        # Wait for user to press a key
-        print('\n[Press any key to continue]', end='', flush=True)
-        # Read a single character
-        fd = sys.stdin.fileno()
-        old_settings = termios.tcgetattr(fd)
-        try:
-            tty.setraw(fd)
-            sys.stdin.read(1)
-        finally:
-            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-            # Restore curses
-            self.stdscr.refresh()
-
-        # Refresh both panels to show any file changes
-        self.left_panel.refresh()
-        self.right_panel.refresh()
-
-    def _is_executable(self, file_path: 'Path') -> bool:
+    def _is_executable(self, file_path: Path) -> bool:
         """Check if a file is executable by the owner.
 
         Args:
@@ -1270,7 +1332,7 @@ class App:
         except OSError:
             return False
 
-    def _execute_file(self, file_path: 'Path') -> None:
+    def _execute_file(self, file_path: Path) -> None:
         """Execute a file in the terminal.
 
         Suspends curses, runs the executable, then waits for a key press
@@ -1279,24 +1341,7 @@ class App:
         Args:
             file_path: Path to the executable file.
         """
-        curses.endwin()
-        try:
-            completed = subprocess.run([str(file_path)], cwd=str(file_path.parent))
-            if completed.returncode != 0:
-                print(f'\n[Exit {completed.returncode}]', end='', flush=True)
-        except (OSError, subprocess.SubprocessError) as e:
-            print(f'\nError: {e}')
-        print('\n[Press any key to continue]', end='', flush=True)
-        fd = sys.stdin.fileno()
-        old_settings = termios.tcgetattr(fd)
-        try:
-            tty.setraw(fd)
-            sys.stdin.read(1)
-        finally:
-            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-            self.stdscr.refresh()
-        self.left_panel.refresh()
-        self.right_panel.refresh()
+        self._run_in_terminal([str(file_path)], file_path.parent)
 
     def _prompt_pattern(
         self, title: str, prompt_text: str, action: Callable[[str], None]
@@ -1380,25 +1425,120 @@ class App:
         if new_name and new_name != old_name:
             result = rename_file(self.active_panel.path, old_name, new_name)
             if result.success:
+                target_name = result.new_name or new_name.strip()
+                if old_name in self.active_panel.selected:
+                    self.active_panel.selected.discard(old_name)
+                    self.active_panel.selected.add(target_name)
                 # Refresh panel and position cursor on renamed item
                 self.active_panel.refresh()
-                # Find and select the renamed item
+                found = False
                 for i, e in enumerate(self.active_panel.entries):
-                    if e.name == new_name:
+                    if e.name == target_name:
                         self.active_panel.cursor = i
+                        found = True
                         break
+                if not found and self.active_panel.cursor >= len(self.active_panel.entries):
+                    self.active_panel.cursor = max(0, len(self.active_panel.entries) - 1)
+                self.active_panel._adjust_scroll()
+
+                other = self.get_other_panel()
+                if other.path == self.active_panel.path:
+                    if old_name in other.selected:
+                        other.selected.discard(old_name)
+                        other.selected.add(target_name)
+                    other.refresh()
+                    if other.cursor >= len(other.entries):
+                        other.cursor = max(0, len(other.entries) - 1)
+                    other._adjust_scroll()
             else:
                 self._show_error(result.error)
 
+    @staticmethod
+    def _format_chmod_error(label: str, err: OSError) -> str:
+        """Format an OSError from chmod/stat consistently with file_ops."""
+        if isinstance(err, FileNotFoundError):
+            return f'{label}: No such file or directory'
+        if isinstance(err, PermissionError):
+            return f'{label}: Permission denied'
+        return f'{label}: {err}'
+
+    @classmethod
+    def _apply_chmod_masks(
+        cls,
+        files: list[str],
+        paths: list[Path],
+        set_mask: int,
+        clear_mask: int,
+        recursive: bool,
+    ) -> tuple[int, int, list[str]]:
+        """Apply set/clear permission bitmasks per file, preserving untouched MIXED bits."""
+        total = 0
+        succeeded = 0
+        errors: list[str] = []
+
+        if not recursive:
+            for filename, path in zip(files, paths):
+                total += 1
+                try:
+                    current_mode = path.stat().st_mode
+                    target_mode = ((current_mode & 0o7777) | set_mask) & ~clear_mask
+                    os.chmod(path, target_mode)
+                    succeeded += 1
+                except OSError as err:
+                    errors.append(cls._format_chmod_error(filename, err))
+            return total, succeeded, errors
+
+        # Iterative post-order traversal; skip symlinks to avoid mutating external
+        # targets, and chmod directories after children so stripping +x is safe.
+        stack: list[tuple[Path, str, int]] = [(p, 'visit', 0) for p in reversed(paths)]
+        while stack:
+            p, phase, dir_mode = stack.pop()
+            if phase == 'finalize':
+                total += 1
+                try:
+                    target_mode = ((dir_mode & 0o7777) | set_mask) & ~clear_mask
+                    os.chmod(p, target_mode)
+                    succeeded += 1
+                except OSError as err:
+                    errors.append(cls._format_chmod_error(str(p), err))
+                continue
+
+            if p.is_symlink():
+                continue
+
+            try:
+                st = p.lstat()
+            except OSError as err:
+                total += 1
+                errors.append(cls._format_chmod_error(str(p), err))
+                continue
+
+            if stat.S_ISDIR(st.st_mode):
+                try:
+                    children = list(p.iterdir())
+                except OSError as err:
+                    total += 1
+                    errors.append(cls._format_chmod_error(str(p), err))
+                    children = []
+                stack.append((p, 'finalize', st.st_mode))
+                for child in children:
+                    stack.append((child, 'visit', 0))
+            else:
+                total += 1
+                try:
+                    target_mode = ((st.st_mode & 0o7777) | set_mask) & ~clear_mask
+                    os.chmod(p, target_mode)
+                    succeeded += 1
+                except OSError as err:
+                    errors.append(cls._format_chmod_error(str(p), err))
+
+        return total, succeeded, errors
+
     def _prompt_chmod(self) -> None:
         """Prompt for permissions and change them on selected files."""
-        import grp
-        import pwd
-        from pathlib import Path
-
-        from tnc.dialog import chmod_dialog
+        from tnc.dialog import ChmodDialog
         from tnc.file_ops import chmod_files, chmod_recursive
-        from tnc.permissions import TriState, get_common_mode
+        from tnc.permissions import _PERMISSION_BITS, TriState, get_common_mode
 
         files = self.active_panel.get_files_for_operation()
         if not files:
@@ -1408,69 +1548,81 @@ class App:
         paths = [self.active_panel.path / f for f in files]
         has_directory = any(p.is_dir() and not p.is_symlink() for p in paths)
 
-        # Get common mode state
+        # Build dialog for single or multi-file mode
         if len(files) == 1:
             try:
                 mode = paths[0].stat().st_mode
-                result = chmod_dialog(
-                    self.stdscr,
-                    file_count=1,
-                    initial_mode=mode,
-                    has_directory=has_directory,
-                    filename=files[0]
-                )
             except OSError as e:
                 self._show_error(str(e))
                 return
+            dialog = ChmodDialog(
+                file_count=1,
+                initial_mode=mode,
+                has_directory=has_directory,
+                filename=files[0],
+            )
         else:
             common_states, failed_count = get_common_mode(paths)
             if failed_count == len(paths):
-                self._show_error("Cannot stat any of the selected files")
+                self._show_error('Cannot stat any of the selected files')
                 return
-            result = chmod_dialog(
-                self.stdscr,
+            dialog = ChmodDialog(
                 file_count=len(files),
                 initial_states=common_states,
-                has_directory=has_directory
+                has_directory=has_directory,
             )
 
-        if result is None:
+        new_mode = dialog.show(self.stdscr)
+        if new_mode is None:
             return
+        recursive = dialog.recursive
 
-        new_mode, recursive = result
+        has_mixed = (
+            len(files) > 1
+            and any(dialog.get_bit_state(b) == TriState.MIXED for b in _PERMISSION_BITS)
+        )
 
-        # Apply changes. Track per-target success counts so that a
-        # partial failure can be reported as such rather than a bare
-        # error string with no indication that some files were already
-        # changed (issue #36).
-        all_errors: list[str] = []
-        succeeded = 0
-        if recursive and has_directory:
+        if has_mixed:
+            if hasattr(dialog, 'get_mode_masks'):
+                set_mask, clear_mask = dialog.get_mode_masks()
+            else:
+                set_mask = 0
+                clear_mask = 0
+                for bit_name, bit_mask in _PERMISSION_BITS.items():
+                    state = dialog.get_bit_state(bit_name)
+                    if state == TriState.CHECKED:
+                        set_mask |= bit_mask
+                    elif state == TriState.UNCHECKED:
+                        clear_mask |= bit_mask
+            total, succeeded, all_errors = self._apply_chmod_masks(
+                files, paths, set_mask, clear_mask, recursive and has_directory
+            )
+        elif recursive and has_directory:
+            all_errors = []
+            succeeded = 0
+            total = 0
             for path in paths:
                 if path.is_dir() and not path.is_symlink():
                     res = chmod_recursive(path, new_mode, file_mode=new_mode)
                 else:
                     res = chmod_files([path.name], self.active_panel.path, new_mode)
-                if res.success:
-                    succeeded += 1
-                else:
-                    all_errors.extend(res.errors or ([res.error] if res.error else []))
-                    # The directory partially succeeded if any descendant
-                    # was changed even though the overall result is failure.
-                    if res.changed_files:
-                        succeeded += 1 if not all_errors else 0
+                err_list = res.errors or ([res.error] if res.error else [])
+                if not res.success and not err_list:
+                    err_list = [f'{path.name}: Unknown error']
+                succeeded += len(res.changed_files)
+                total += len(res.changed_files) + len(err_list)
+                all_errors.extend(err_list)
         else:
             res = chmod_files(files, self.active_panel.path, new_mode)
-            if res.success:
-                succeeded = len(files)
-            else:
-                succeeded = len(res.changed_files)
-                all_errors.extend(res.errors or ([res.error] if res.error else []))
+            total = len(files)
+            succeeded = len(res.changed_files)
+            all_errors = list(res.errors or ([res.error] if res.error else []))
 
         if all_errors:
-            self._show_error(format_partial_success_message(
-                'Chmod', total=len(paths), succeeded=succeeded, errors=all_errors,
-            ))
+            header = format_partial_success_message(
+                'Chmod', total=total, succeeded=succeeded, errors=[],
+            )
+            self._show_error(header, details=all_errors)
 
         self.active_panel.refresh()
 
@@ -1478,7 +1630,6 @@ class App:
         """Prompt for owner/group and change them on selected files."""
         import grp
         import pwd
-        from pathlib import Path
 
         from tnc.dialog import chown_dialog
         from tnc.file_ops import chown_files
@@ -1543,12 +1694,14 @@ class App:
 
         res = chown_files(files, self.active_panel.path, uid, gid)
         if not res.success:
-            self._show_error(format_partial_success_message(
+            err_list = res.errors or ([res.error] if res.error else [])
+            header = format_partial_success_message(
                 'Chown',
                 total=len(files),
                 succeeded=len(res.changed_files),
-                errors=res.errors or [res.error] if res.error else [],
-            ))
+                errors=[],
+            )
+            self._show_error(header, details=err_list)
 
         self.active_panel.refresh()
 
@@ -1560,8 +1713,13 @@ class App:
         if name:
             result = self.active_panel.create_file(name)
             if result.success:
-                # Open the new file in editor
-                edit_result = self.edit_current_file()
+                created_name = result.created_name or name.strip()
+                created_path = self.active_panel.path / created_name
+                # Open the created path directly (works when hidden or whitespace-padded)
+                edit_result = self.edit_current_file(file_path=created_path)
+                other = self.get_other_panel()
+                if other.path == self.active_panel.path:
+                    other.refresh()
                 if not edit_result.success:
                     # Show error - file was created but editor failed
                     show_error_dialog(
