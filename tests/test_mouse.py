@@ -95,7 +95,29 @@ def create_mock_stdscr(rows: int = 24, cols: int = 80) -> mock.MagicMock:
     return mock_stdscr
 
 
-class TestMouseEnableDisable(unittest.TestCase):
+class _IsolatedConfigTestCase(unittest.TestCase):
+    """Isolate Config.default_path() from user's real ~/.config/tnc/config."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self._cfg_tmpdir = tempfile.TemporaryDirectory()
+        self._cfg_patcher = mock.patch.object(
+            Config,
+            'default_path',
+            return_value=str(Path(self._cfg_tmpdir.name) / 'config'),
+        )
+        self._cfg_patcher.start()
+
+    def tearDown(self) -> None:
+        from tnc.modal import Modal
+
+        Modal.button_translator = None
+        self._cfg_patcher.stop()
+        self._cfg_tmpdir.cleanup()
+        super().tearDown()
+
+
+class TestMouseEnableDisable(_IsolatedConfigTestCase):
     """Test mouse enable/disable methods."""
 
     @mock.patch('curses.has_colors', return_value=False)
@@ -103,7 +125,7 @@ class TestMouseEnableDisable(unittest.TestCase):
     @mock.patch('curses.mousemask')
     def test_enable_mouse_calls_mousemask(self, mock_mousemask, _curs_set, _has_colors):
         """_enable_mouse should call curses.mousemask with click/scroll events."""
-        mock_mousemask.return_value = 1  # Non-zero means success
+        mock_mousemask.return_value = (1, 0)  # 2-tuple (availmask, oldmask)
         app = App(create_mock_stdscr())
         app.setup()
 
@@ -112,14 +134,16 @@ class TestMouseEnableDisable(unittest.TestCase):
         # Verify mousemask was called (specific events mask)
         self.assertTrue(mock_mousemask.called)
         args = mock_mousemask.call_args[0][0]
-        # Should include click events but not ALL_MOUSE_EVENTS
+        # Should include click events and BUTTON5_PRESSED fallback
         self.assertNotEqual(args, 0)
+        self.assertTrue(args & getattr(curses, 'BUTTON5_PRESSED', 0x200000))
 
     @mock.patch('curses.has_colors', return_value=False)
     @mock.patch('curses.curs_set')
     @mock.patch('curses.mousemask')
     def test_disable_mouse_calls_mousemask_zero(self, mock_mousemask, _curs_set, _has_colors):
         """_disable_mouse should call curses.mousemask(0)."""
+        mock_mousemask.return_value = (1, 0)
         app = App(create_mock_stdscr())
         app.setup()
 
@@ -130,9 +154,37 @@ class TestMouseEnableDisable(unittest.TestCase):
     @mock.patch('curses.has_colors', return_value=False)
     @mock.patch('curses.curs_set')
     @mock.patch('curses.mousemask')
-    def test_enable_mouse_returns_true_on_success(self, mock_mousemask, _curs_set, _has_colors):
-        """_enable_mouse should return True when mouse is available."""
-        mock_mousemask.return_value = 1  # Non-zero means success
+    def test_enable_mouse_returns_true_on_tuple_success(self, mock_mousemask, _curs_set, _has_colors):
+        """_enable_mouse should return True when mousemask returns (1, 0)."""
+        mock_mousemask.return_value = (1, 0)
+        app = App(create_mock_stdscr())
+        app.setup()
+
+        result = app._enable_mouse()
+
+        self.assertTrue(result)
+        self.assertTrue(app._mouse_active)
+
+    @mock.patch('curses.has_colors', return_value=False)
+    @mock.patch('curses.curs_set')
+    @mock.patch('curses.mousemask')
+    def test_enable_mouse_returns_false_on_tuple_unavailable(self, mock_mousemask, _curs_set, _has_colors):
+        """_enable_mouse should return False when mousemask returns (0, 0)."""
+        mock_mousemask.return_value = (0, 0)  # Terminal doesn't support mouse
+        app = App(create_mock_stdscr())
+        app.setup()
+
+        result = app._enable_mouse()
+
+        self.assertFalse(result)
+        self.assertFalse(app._mouse_active)
+
+    @mock.patch('curses.has_colors', return_value=False)
+    @mock.patch('curses.curs_set')
+    @mock.patch('curses.mousemask')
+    def test_enable_mouse_returns_true_on_legacy_int_success(self, mock_mousemask, _curs_set, _has_colors):
+        """_enable_mouse preserves compatibility with legacy int return 1."""
+        mock_mousemask.return_value = 1
         app = App(create_mock_stdscr())
         app.setup()
 
@@ -158,7 +210,7 @@ class TestMouseEnableDisable(unittest.TestCase):
     @mock.patch('curses.mousemask')
     def test_setup_enables_mouse_when_config_enabled(self, mock_mousemask, _curs_set, _has_colors):
         """setup() should enable mouse when config.mouse_enabled is True."""
-        mock_mousemask.return_value = 1  # Non-zero means success
+        mock_mousemask.return_value = (1, 0)
         app = App(create_mock_stdscr())
         app.setup()
 
@@ -167,6 +219,7 @@ class TestMouseEnableDisable(unittest.TestCase):
         self.assertTrue(mock_mousemask.called)
         args = mock_mousemask.call_args[0][0]
         self.assertNotEqual(args, 0)
+        self.assertTrue(app._mouse_active)
 
     @mock.patch('curses.has_colors', return_value=False)
     @mock.patch('curses.curs_set')
@@ -177,9 +230,12 @@ class TestMouseEnableDisable(unittest.TestCase):
             f.write('mouse_enabled = no\n')
             config_path = f.name
 
-        with mock.patch.object(Config, 'default_path', return_value=config_path):
-            app = App(create_mock_stdscr())
-            app.setup()
+        try:
+            with mock.patch.object(Config, 'default_path', return_value=config_path):
+                app = App(create_mock_stdscr())
+                app.setup()
+        finally:
+            Path(config_path).unlink(missing_ok=True)
 
         # mousemask should not be called when mouse is disabled
         mock_mousemask.assert_not_called()
@@ -188,28 +244,33 @@ class TestMouseEnableDisable(unittest.TestCase):
     @mock.patch('curses.curs_set')
     @mock.patch('curses.mousemask')
     def test_toggle_when_terminal_unsupported(self, mock_mousemask, _curs_set, _has_colors):
-        """Toggle should keep _mouse_active False when terminal doesn't support mouse."""
-        mock_mousemask.return_value = 0  # Terminal doesn't support mouse
+        """Toggle should keep _mouse_active and config.mouse_enabled False when unsupported."""
+        mock_mousemask.return_value = (0, 0)  # Terminal doesn't support mouse
 
         with tempfile.NamedTemporaryFile(mode='w', suffix='.conf', delete=False) as f:
             f.write('mouse_enabled = no\n')
             config_path = f.name
 
-        with mock.patch.object(Config, 'default_path', return_value=config_path):
-            app = App(create_mock_stdscr())
-            app.setup()
+        try:
+            with mock.patch.object(Config, 'default_path', return_value=config_path):
+                app = App(create_mock_stdscr())
+                app.setup()
 
-        # Mouse starts disabled
-        self.assertFalse(app.mouse_enabled)
+            # Mouse starts disabled
+            self.assertFalse(app.mouse_enabled)
+            self.assertFalse(app.config.mouse_enabled)
 
-        # Try to toggle on, but terminal doesn't support it
-        app._toggle_mouse()
+            # Try to toggle on, but terminal doesn't support it
+            app._toggle_mouse()
 
-        # _mouse_active should still be False because terminal doesn't support mouse
-        self.assertFalse(app._mouse_active)
+            # Both _mouse_active and config.mouse_enabled should remain False
+            self.assertFalse(app._mouse_active)
+            self.assertFalse(app.config.mouse_enabled)
+        finally:
+            Path(config_path).unlink(missing_ok=True)
 
 
-class TestMouseEventDetection(unittest.TestCase):
+class TestMouseEventDetection(_IsolatedConfigTestCase):
     """Test KEY_MOUSE event detection in run loop."""
 
     @mock.patch('curses.has_colors', return_value=False)
@@ -220,7 +281,7 @@ class TestMouseEventDetection(unittest.TestCase):
     def test_key_mouse_calls_handle_mouse(self, mock_getmouse, mock_mousemask, _doupdate, _curs_set, _has_colors):
         """KEY_MOUSE should route to handle_mouse method."""
         mock_getmouse.return_value = (0, 10, 5, 0, curses.BUTTON1_CLICKED)
-        mock_mousemask.return_value = 1  # Non-zero means success
+        mock_mousemask.return_value = (1, 0)
 
         mock_stdscr = create_mock_stdscr()
         # Return KEY_MOUSE once, then F10 to quit
@@ -242,7 +303,7 @@ class TestMouseEventDetection(unittest.TestCase):
     def test_getmouse_error_handled_gracefully(self, mock_getmouse, mock_mousemask, _doupdate, _curs_set, _has_colors):
         """getmouse() errors should be caught and ignored."""
         mock_getmouse.side_effect = curses.error('no mouse event')
-        mock_mousemask.return_value = 1  # Non-zero means success
+        mock_mousemask.return_value = (1, 0)
 
         mock_stdscr = create_mock_stdscr()
         mock_stdscr.getch.side_effect = [curses.KEY_MOUSE, curses.KEY_F10]
@@ -258,7 +319,7 @@ class TestMouseEventDetection(unittest.TestCase):
     @mock.patch('curses.mousemask')
     def test_handle_mouse_returns_action_none(self, mock_mousemask, _curs_set, _has_colors):
         """handle_mouse should return Action.NONE (placeholder for now)."""
-        mock_mousemask.return_value = 1  # Non-zero means success
+        mock_mousemask.return_value = (1, 0)
         app = App(create_mock_stdscr())
         app.setup()
 
@@ -272,9 +333,9 @@ class TestMouseEventDetection(unittest.TestCase):
     @mock.patch('curses.mousemask')
     @mock.patch('curses.getmouse')
     def test_key_mouse_ignored_when_inactive(self, mock_getmouse, mock_mousemask, _doupdate, _curs_set, _has_colors):
-        """KEY_MOUSE should be ignored when _mouse_active is False."""
+        """KEY_MOUSE should be ignored when _mouse_active is False (even on (0, 0) tuple)."""
         mock_getmouse.return_value = (0, 10, 5, 0, curses.BUTTON1_CLICKED)
-        mock_mousemask.return_value = 0  # Terminal doesn't support mouse
+        mock_mousemask.return_value = (0, 0)  # Terminal doesn't support mouse
 
         mock_stdscr = create_mock_stdscr()
         # Return KEY_MOUSE once, then F10 to quit
@@ -290,7 +351,7 @@ class TestMouseEventDetection(unittest.TestCase):
         app.handle_mouse.assert_not_called()
 
 
-class TestMouseToggle(unittest.TestCase):
+class TestMouseToggle(_IsolatedConfigTestCase):
     """Test mouse toggle via Options menu."""
 
     def test_toggle_mouse_action_exists(self):
@@ -302,7 +363,7 @@ class TestMouseToggle(unittest.TestCase):
     @mock.patch('curses.mousemask')
     def test_toggle_mouse_disables_when_enabled(self, mock_mousemask, _curs_set, _has_colors):
         """_toggle_mouse should disable mouse when currently enabled."""
-        mock_mousemask.return_value = 1  # Non-zero means success
+        mock_mousemask.return_value = (1, 0)
         app = App(create_mock_stdscr())
         app.setup()
 
@@ -318,22 +379,26 @@ class TestMouseToggle(unittest.TestCase):
     @mock.patch('curses.mousemask')
     def test_toggle_mouse_enables_when_disabled(self, mock_mousemask, _curs_set, _has_colors):
         """_toggle_mouse should enable mouse when currently disabled."""
-        mock_mousemask.return_value = 1  # Non-zero means success
+        mock_mousemask.return_value = (1, 0)
 
         with tempfile.NamedTemporaryFile(mode='w', suffix='.conf', delete=False) as f:
             f.write('mouse_enabled = no\n')
             config_path = f.name
 
-        with mock.patch.object(Config, 'default_path', return_value=config_path):
-            app = App(create_mock_stdscr())
-            app.setup()
+        try:
+            with mock.patch.object(Config, 'default_path', return_value=config_path):
+                app = App(create_mock_stdscr())
+                app.setup()
 
-        # Mouse is disabled via config
-        self.assertFalse(app.mouse_enabled)
+                # Mouse is disabled via config
+                self.assertFalse(app.mouse_enabled)
 
-        app._toggle_mouse()
+                app._toggle_mouse()
 
-        self.assertTrue(app.mouse_enabled)
+                self.assertTrue(app.mouse_enabled)
+                self.assertTrue(app.config.mouse_enabled)
+        finally:
+            Path(config_path).unlink(missing_ok=True)
 
 
 class TestMenuMouseOption(unittest.TestCase):
@@ -404,7 +469,7 @@ class TestMouseSwapAction(unittest.TestCase):
         self.assertEqual(swap_item.action, 'toggle_mouse_swap')
 
 
-class TestMouseButtonTranslation(unittest.TestCase):
+class TestMouseButtonTranslation(_IsolatedConfigTestCase):
     """Test mouse button state translation for swap."""
 
     @mock.patch('curses.has_colors', return_value=False)
@@ -492,7 +557,7 @@ class TestMouseButtonTranslation(unittest.TestCase):
         self.assertEqual(result, curses.BUTTON4_PRESSED)
 
 
-class TestMouseSwapToggle(unittest.TestCase):
+class TestMouseSwapToggle(_IsolatedConfigTestCase):
     """Test toggling mouse swap setting."""
 
     @mock.patch('curses.has_colors', return_value=False)
@@ -735,7 +800,7 @@ class TestPanelEntryAtPoint(unittest.TestCase):
             self.assertEqual(result, 5)
 
 
-class TestPanelClickRouting(unittest.TestCase):
+class TestPanelClickRouting(_IsolatedConfigTestCase):
     """Test App.handle_mouse() routes clicks to correct panel."""
 
     @mock.patch('curses.has_colors', return_value=False)
@@ -824,7 +889,7 @@ class TestPanelClickRouting(unittest.TestCase):
         self.assertEqual(app.left_panel.cursor, 3)
 
 
-class TestPanelDoubleClick(unittest.TestCase):
+class TestPanelDoubleClick(_IsolatedConfigTestCase):
     """Test double-click enters directory."""
 
     @mock.patch('curses.has_colors', return_value=False)
@@ -849,7 +914,7 @@ class TestPanelDoubleClick(unittest.TestCase):
                 mock_enter.assert_called_once()
 
 
-class TestPanelRightClick(unittest.TestCase):
+class TestPanelRightClick(_IsolatedConfigTestCase):
     """Test right-click inserts filename."""
 
     @mock.patch('curses.has_colors', return_value=False)
@@ -896,7 +961,7 @@ class TestPanelRightClick(unittest.TestCase):
             self.assertIn('testfile.txt', app.command_line.input_text)
 
 
-class TestPanelScrollWheel(unittest.TestCase):
+class TestPanelScrollWheel(_IsolatedConfigTestCase):
     """Test scroll wheel navigation."""
 
     @mock.patch('curses.has_colors', return_value=False)
@@ -943,7 +1008,7 @@ class TestPanelScrollWheel(unittest.TestCase):
             mock_nav.assert_called_once()
 
 
-class TestPanelClickEdgeCases(unittest.TestCase):
+class TestPanelClickEdgeCases(_IsolatedConfigTestCase):
     """Test edge cases for panel mouse clicks."""
 
     @mock.patch('curses.has_colors', return_value=False)
@@ -1078,7 +1143,7 @@ class TestPanelClickEdgeCases(unittest.TestCase):
             self.assertEqual(app.left_panel.cursor, original_cursor)
 
 
-class TestMiddleClickEnter(unittest.TestCase):
+class TestMiddleClickEnter(_IsolatedConfigTestCase):
     """Test middle mouse button (scroll wheel click) acts as Enter."""
 
     @mock.patch('curses.has_colors', return_value=False)

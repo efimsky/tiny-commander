@@ -55,10 +55,10 @@ class TestBuildPanelSortItems(unittest.TestCase):
         self.assertEqual(items[4].action, 'reverse_sort_left')
 
     def test_build_left_panel_toggle_hidden(self):
-        """Sixth item is Toggle hidden with toggle_hidden action (shared)."""
+        """Sixth item is Toggle hidden with panel-specific toggle_hidden_left action."""
         items = _build_panel_sort_items('left')
         self.assertEqual(items[5].name, 'Toggle hidden')
-        self.assertEqual(items[5].action, 'toggle_hidden')
+        self.assertEqual(items[5].action, 'toggle_hidden_left')
 
     def test_build_right_panel_sort_by_name(self):
         """Right panel: Sort by name has sort_name_right action."""
@@ -78,12 +78,12 @@ class TestBuildPanelSortItems(unittest.TestCase):
         self.assertEqual(items[4].name, 'Reverse sort')
         self.assertEqual(items[4].action, 'reverse_sort_right')
 
-    def test_build_right_panel_toggle_hidden_same(self):
-        """Toggle hidden action is the same for both panels."""
+    def test_build_right_panel_toggle_hidden_panel_specific(self):
+        """Toggle hidden action is panel-specific for left and right panels."""
         left_items = _build_panel_sort_items('left')
         right_items = _build_panel_sort_items('right')
-        self.assertEqual(left_items[5].action, right_items[5].action)
-        self.assertEqual(left_items[5].action, 'toggle_hidden')
+        self.assertEqual(left_items[5].action, 'toggle_hidden_left')
+        self.assertEqual(right_items[5].action, 'toggle_hidden_right')
 
 
 class TestMenuBarUsesTemplate(unittest.TestCase):

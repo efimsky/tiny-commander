@@ -30,7 +30,7 @@ def _build_panel_sort_items(side: str) -> list['MenuItem']:
         MenuItem('Sort by date', f'sort_date_{side}'),
         MenuItem('Sort by extension', f'sort_ext_{side}'),
         MenuItem('Reverse sort', f'reverse_sort_{side}'),
-        MenuItem('Toggle hidden', 'toggle_hidden'),
+        MenuItem('Toggle hidden', f'toggle_hidden_{side}'),
     ]
 
 
@@ -135,13 +135,13 @@ class MenuBar:
         # Left arrow - previous menu (wraps around)
         if key == curses.KEY_LEFT:
             self.selected_menu = (self.selected_menu - 1) % len(self.menus)
-            self.selected_item = 0  # Reset item selection when switching menus
+            self._select_first_enabled()
             return True
 
         # Right arrow - next menu (wraps around)
         if key == curses.KEY_RIGHT:
             self.selected_menu = (self.selected_menu + 1) % len(self.menus)
-            self.selected_item = 0  # Reset item selection when switching menus
+            self._select_first_enabled()
             return True
 
         # Enter - select item
@@ -167,7 +167,24 @@ class MenuBar:
                 self.dropdown_open = False
             return True
 
-        return False
+        # Allow global menu toggle and quit keys to pass through to App
+        if key in (curses.KEY_F9, curses.KEY_F2, curses.KEY_F10):
+            return False
+
+        # Consume other keys while dropdown is open so they don't leak to command line/panels
+        return True
+
+    def _select_first_enabled(self) -> None:
+        """Select the first enabled item in the active menu, or 0 if none."""
+        first_enabled = self._find_next_enabled(0, 1)
+        self.selected_item = first_enabled if first_enabled is not None else 0
+
+    def open_dropdown(self, menu_index: int | None = None) -> None:
+        """Open dropdown (optionally switching to menu_index) at first enabled item."""
+        if menu_index is not None:
+            self.selected_menu = menu_index
+        self.dropdown_open = True
+        self._select_first_enabled()
 
     def _find_next_enabled(self, start: int, direction: int) -> int | None:
         """Find next enabled item in the current menu.
@@ -191,11 +208,14 @@ class MenuBar:
         """Get the action string for the currently selected item.
 
         Returns:
-            The action string, or empty string if no action.
+            The action string, or empty string if no action or item disabled.
         """
         menu = self.menus[self.selected_menu]
         if 0 <= self.selected_item < len(menu.items):
-            return menu.items[self.selected_item].action
+            item = menu.items[self.selected_item]
+            if not item.enabled:
+                return ''
+            return item.action
         return ''
 
     def get_display_text(self, width: int) -> str:
@@ -255,7 +275,7 @@ class MenuBar:
         # Clear dropdown positions
         self.dropdown_positions.clear()
 
-        if not self.visible or not self.dropdown_open:
+        if not self.visible or not self.dropdown_open or width <= 0:
             return
 
         menu = self.menus[self.selected_menu]
@@ -280,11 +300,15 @@ class MenuBar:
         else:
             item_width = max_name + 2  # ' name '
 
+        # Clamp dropdown start column within terminal width
+        x = max(0, min(x, max(0, width - item_width)))
+        visible_width = min(item_width, width)
+
         # Render dropdown items and track positions
         for i, item in enumerate(menu.items):
             item_y = y + i
             start_x = x
-            end_x = x + item_width
+            end_x = x + visible_width
             self.dropdown_positions.append((item_y, start_x, end_x, i))
 
             if i == self.selected_item:
@@ -298,6 +322,8 @@ class MenuBar:
                 item_text = f' {item.name}{" " * gap}{item.shortcut} '
             else:
                 item_text = f' {item.name} '.ljust(item_width)
+            if item_width > width:
+                item_text = item_text[:width]
             safe_addstr(win, item_y, start_x, item_text, attr)
 
     def contains_point(self, x: int, y: int) -> bool:
